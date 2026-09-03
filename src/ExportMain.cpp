@@ -26,6 +26,7 @@
 #include <fcntl.h>
 #include <io.h>
 #include <cstdio>
+#include <iomanip>
 #include <cstdint>
 #include <cwctype>
 #include <string>
@@ -849,12 +850,19 @@ int RunFile(Options o) {
     const std::wstring ffmpeg = smru::paths::FfmpegExe().wstring();
     if (ffmpeg.empty()) { fprintf(stderr, SMRU_LOG_TAG " ffmpeg.exe not found\n"); return 3; }
     std::wstringstream cmd;
+    // The source audio is capped to the probed video length as an INPUT option.
+    // -shortest was measured to drop the LAST VIDEO FRAME at the mux boundary
+    // (5053 frames in, 5052 out, every time, whatever the buffer), and an audio
+    // track that outlives the picture must never decide the video length either.
+    std::wstringstream audioCap;
+    if (decoder.DurationSeconds() > 0.0)
+        audioCap << L" -t " << std::fixed << std::setprecision(6) << decoder.DurationSeconds();
     // RGB -> YUV must use BT.709 coefficients AND tag the stream: swscale's
     // untagged default is BT.601, and players assume BT.709 for HD sizes, which
     // shifts the whole picture warm/red on playback.
     cmd << L"\"" << ffmpeg << L"\" -y -hide_banner -loglevel error"
         << L" -f rawvideo -pixel_format rgba -video_size " << encW << L"x" << outH
-        << L" -framerate " << fps << L" -i - -i \"" << o.input << L"\""
+        << L" -framerate " << fps << L" -i -" << audioCap.str() << L" -i \"" << o.input << L"\""
         << L" -map 0:v:0 -map 1:a:0?"
         << L" -vf \"scale=out_color_matrix=bt709:out_range=tv,setparams=color_primaries=bt709:color_trc=iec61966-2-1\"";
     // Encoder: x264 for compatibility; NVENC HEVC/AV1 for 4K/8K where a software
@@ -866,7 +874,7 @@ int RunFile(Options o) {
         cmd << L" -c:v av1_nvenc -preset p5 -rc vbr -cq " << o.crf << L" -b:v 0";
     else
         cmd << L" -c:v libx264 -preset medium -crf " << o.crf;
-    cmd << L" -pix_fmt yuv420p -c:a aac -shortest \"" << o.exportPath << L"\"";
+    cmd << L" -pix_fmt yuv420p -c:a aac \"" << o.exportPath << L"\"";
 
     // Frames go down the pipe; ffmpeg keeps this console's stdout/stderr so its
     // own diagnostics land in whatever captured ours.
