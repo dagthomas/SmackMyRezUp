@@ -1,0 +1,31 @@
+// SmackMyRezUp.exe resources: the version block plus the self-provisioning
+// payload. The player carries its runtime set as RCDATA and extracts whatever
+// is missing beside itself at startup (see kPayload in PlayerMain.cpp - the
+// id/path tables must match). Refresh payload\ to change what ships;
+// SmackMyRezUpExport.exe is re-copied there by its POST_BUILD step.
+#define SMRU_RC_FILE_DESCRIPTION  "SmackMyRezUp video player"
+#define SMRU_RC_INTERNAL_NAME     "SmackMyRezUp"
+#define SMRU_RC_ORIGINAL_FILENAME "SmackMyRezUp.exe"
+#include "VersionInfo.rc"
+
+9004 RCDATA "../payload/nvngx_dlssnr.dll"
+9014 RCDATA "../payload/ffmpeg.exe"
+9015 RCDATA "../payload/ffprobe.exe"
+9016 RCDATA "../payload/SmackMyRezUpExport.exe"
+9017 RCDATA "../payload/fonts/BricolageGrotesque.ttf"
+9018 RCDATA "../payload/fonts/IBMPlexSans-Regular.ttf"
+9019 RCDATA "../docs/help.html"
+// The Python guide generators, so a deployed player can run GenFlow/GenDepth/
+// GenMask/SeedVR without the checkout (ids must match kPayload).
+9020 RCDATA "../tools/smru_env.py"
+9021 RCDATA "../tools/make_flow_video.py"
+9022 RCDATA "../tools/make_depth_video.py"
+9023 RCDATA "../tools/make_mask_video.py"
+9024 RCDATA "../tools/run_seedvr.py"
+9025 RCDATA "../tools/depth_probe.py"
+9026 RCDATA "../tools/trt_runtime.py"
+// Sample grades for the LUT button.
+9030 RCDATA "../luts/identity.cube"
+9031 RCDATA "../luts/cine_teal_orange.cube"
+9032 RCDATA "../luts/cine_film_warm.cube"
+9033 RCDATA "../luts/cine_bleach_bypass.cube"

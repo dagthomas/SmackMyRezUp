@@ -1,0 +1,40 @@
+// Shared VERSIONINFO block for the SmackMyRezUp executables. Not compiled on
+// its own: each target's .rc defines SMRU_RC_FILE_DESCRIPTION,
+// SMRU_RC_INTERNAL_NAME and SMRU_RC_ORIGINAL_FILENAME, then #includes this.
+#include <winresrc.h>
+#include "AppIdentity.h"
+
+#ifdef _DEBUG
+#define SMRU_RC_FILEFLAGS VS_FF_DEBUG
+#else
+#define SMRU_RC_FILEFLAGS 0x0L
+#endif
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    SMRU_VERSION_MAJOR,SMRU_VERSION_MINOR,SMRU_VERSION_PATCH,0
+ PRODUCTVERSION SMRU_VERSION_MAJOR,SMRU_VERSION_MINOR,SMRU_VERSION_PATCH,0
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      SMRU_RC_FILEFLAGS
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      SMRU_COMPANY_NAME
+            VALUE "FileDescription",  SMRU_RC_FILE_DESCRIPTION
+            VALUE "FileVersion",      SMRU_VERSION_TEXT
+            VALUE "InternalName",     SMRU_RC_INTERNAL_NAME
+            VALUE "LegalCopyright",   SMRU_COPYRIGHT
+            VALUE "OriginalFilename", SMRU_RC_ORIGINAL_FILENAME
+            VALUE "ProductName",      SMRU_PRODUCT_NAME
+            VALUE "ProductVersion",   SMRU_VERSION_TEXT
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

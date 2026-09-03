@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmackMyRezUp Manual</title>
+<style>
+  :root{
+    --ground:#f4f6f4; --surface:#ffffff; --ink:#1a1f1c; --muted:#5a655e; --faint:#8b968f;
+    --rule:#d8dfda; --rule-strong:#bcc6bf; --code-bg:#eef2ef; --accent:#1f7a45; --accent-ink:#ffffff;
+    --pic:#2f6fcf; --job:#6d4fc4; --mot:#1a8f8f; --fx:#2e8b4a; --ins:#a8792c;
+    --warn-bg:#fff5df; --warn:#8a5a00;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#101412; --surface:#171d19; --ink:#e6ebe7; --muted:#9aa69e; --faint:#6f7a73;
+      --rule:#263029; --rule-strong:#36423a; --code-bg:#1c2420; --accent:#6fcf8a; --accent-ink:#0f1a13;
+      --pic:#7fb2ff; --job:#b9a1ff; --mot:#6fd3d3; --fx:#8fdc9a; --ins:#e0c48a;
+      --warn-bg:#2a2410; --warn:#e6c26a;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#101412; --surface:#171d19; --ink:#e6ebe7; --muted:#9aa69e; --faint:#6f7a73;
+    --rule:#263029; --rule-strong:#36423a; --code-bg:#1c2420; --accent:#6fcf8a; --accent-ink:#0f1a13;
+    --pic:#7fb2ff; --job:#b9a1ff; --mot:#6fd3d3; --fx:#8fdc9a; --ins:#e0c48a;
+    --warn-bg:#2a2410; --warn:#e6c26a;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+  body{margin:0;background:var(--ground);color:var(--ink);
+       font-family:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;font-size:16px;line-height:1.6}
+  h1,h2,h3,.eyebrow,.toc a,.tag,th{font-family:Bahnschrift,"Segoe UI Semibold","Segoe UI",system-ui,sans-serif}
+  code,pre,kbd,.mono{font-family:"Cascadia Mono","Cascadia Code",Consolas,ui-monospace,monospace;font-size:.92em}
+  .wrap{max-width:1180px;margin:0 auto;padding:36px 24px 96px;display:grid;grid-template-columns:230px minmax(0,1fr);gap:44px}
+  @media (max-width:860px){.wrap{grid-template-columns:1fr;gap:20px}.toc{position:static}}
+  .toc{position:sticky;top:20px;align-self:start;font-size:14px}
+  .toc .eyebrow{margin-bottom:8px}
+  .toc a{display:block;color:var(--muted);text-decoration:none;padding:4px 0 4px 10px;border-left:2px solid var(--rule)}
+  .toc a:hover,.toc a:focus-visible{color:var(--ink);border-left-color:var(--accent);outline:none}
+  .eyebrow{font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+  header h1{font-size:clamp(30px,4.5vw,42px);letter-spacing:-.01em;margin:6px 0 10px;line-height:1.1;text-wrap:balance}
+  header p.lede{font-size:18px;color:var(--muted);max-width:66ch;margin:0}
+  main{min-width:0}
+  section{padding:34px 0 8px;border-top:1px solid var(--rule)}
+  section:first-of-type{border-top:none;padding-top:8px}
+  h2{font-size:24px;margin:0 0 14px;letter-spacing:-.005em;text-wrap:balance}
+  h3{font-size:17px;margin:26px 0 8px}
+  p,li{max-width:70ch}
+  p{margin:0 0 12px}
+  ul,ol{margin:0 0 12px;padding-left:22px}
+  li{margin-bottom:5px}
+  a{color:var(--accent)}
+  pre{background:var(--code-bg);border:1px solid var(--rule);border-radius:6px;padding:12px 14px;overflow-x:auto;margin:0 0 14px;line-height:1.5}
+  p code,li code,td code{background:var(--code-bg);padding:1px 5px;border-radius:4px}
+  kbd{display:inline-block;background:var(--code-bg);border:1px solid var(--rule-strong);border-bottom-width:2px;border-radius:4px;padding:0 6px;font-size:.85em;line-height:1.6}
+  .tbl{overflow-x:auto;border:1px solid var(--rule);border-radius:6px;background:var(--surface);margin:0 0 16px}
+  table{border-collapse:collapse;width:100%;font-size:14.5px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+  th{font-size:11.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  tr:last-child td{border-bottom:none}
+  td.k{white-space:nowrap;font-weight:600}
+  .num{font-variant-numeric:tabular-nums}
+  /* panel-group sections carry the same tint the panel uses */
+  .group{border-left:3px solid var(--g);padding-left:14px;margin:18px 0 22px}
+  .group h3{margin-top:0;color:var(--g)}
+  .g-pic{--g:var(--pic)} .g-job{--g:var(--job)} .g-mot{--g:var(--mot)} .g-fx{--g:var(--fx)} .g-ins{--g:var(--ins)} .g-lvl{--g:var(--muted)}
+  .pill{display:inline-block;font-family:Bahnschrift,"Segoe UI",sans-serif;font-size:13px;padding:1px 9px;border:1px solid var(--rule-strong);border-radius:12px;margin-right:3px;white-space:nowrap}
+  .note{background:var(--warn-bg);border-left:3px solid var(--warn);padding:10px 14px;border-radius:0 6px 6px 0;margin:0 0 14px;max-width:70ch}
+  .note strong{color:var(--warn)}
+  .measured{color:var(--muted);font-size:14px}
+  dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin:0 0 14px;max-width:75ch}
+  dt{font-weight:600;white-space:nowrap}
+  dd{margin:0;color:var(--ink)}
+  footer{color:var(--faint);font-size:13.5px;margin-top:40px;border-top:1px solid var(--rule);padding-top:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="Contents">
+  <div class="eyebrow">Contents</div>
+  <a href="#how">How it works</a>
+  <a href="#window">The window</a>
+  <a href="#keys">Keyboard</a>
+  <a href="#sidecars">Guide files (sidecars)</a>
+  <a href="#custom">Make your own guides</a>
+  <a href="#generators">Built-in generators</a>
+  <a href="#export">Exporting</a>
+  <a href="#headless">Headless exporter</a>
+  <a href="#settings">Settings &amp; files</a>
+  <a href="#trouble">Troubleshooting</a>
+  <a href="#better">Better guides</a>
+</nav>
+<main>
+<header>
+  <div class="eyebrow">SmackMyRezUp 0.14 · Windows x64 · RTX 50 series</div>
+  <h1>SmackMyRezUp Manual</h1>
+  <p class="lede">A video player and exporter that runs ordinary footage — or a single image — through the experimental NVIDIA DLSS 5 neural-rendering runtime, using motion, depth and mask guides the way a game engine would supply them. This page covers every control, the file formats, and how to bring your own guides.</p>
+</header>
+
+<section id="how">
+  <h2>How it works</h2>
+<pre>video / image → FFmpeg decode → resize to the output size (bilinear or Lanczos3)
+             → guides: motion vectors  (block matcher, RAFT flow, or your _flow.mp4)
+                       depth           (built-in proxy, Depth Anything, or your _depth.mp4)
+                       control mask    (block-matcher uncertainty, or your _mask.mp4)
+             → DLSS-NR evaluate, 1:1 at the output size
+             → tone preserve → sharpen → LUT → display / export</pre>
+  <p>The neural pass never upscales by itself. Upscaling is a deterministic resize first; the neural pass then redraws every output pixel at 1:1, which is why <em>Native</em> export (source size, no resize) gives the sharpest look of the original pixels.</p>
+  <p class="measured">Measured facts baked into the defaults: binding <code>DLSSNR.MVec</code> (even with zero vectors) removes most temporal jitter; binding <code>DLSSNR.ControlMask</code> changes the output on its own, more than the mask's content does; <code>DLSSNR.Depth</code> is ignored by the current runtime build but stays wired. The runtime exposes exactly one mask input and one set of intensity/structure/tone scalars per evaluation.</p>
+</section>
+
+<section id="window">
+  <h2>The window</h2>
+  <p>Video on the left, a scrollable control panel on the right, transport bar and timeline at the bottom. Every button and slider has a tooltip: rest the mouse on it for half a second. Click a group caption to collapse or expand it; <strong>turn the mouse wheel over the panel to scroll it</strong> — on a short window the Levels group sits below the bar until you do.</p>
+
+  <h3>Bottom bar</h3>
+  <p><span class="pill">Open</span><span class="pill">−10 s</span><span class="pill">Play / Pause</span><span class="pill">Stop</span><span class="pill">+10 s</span><span class="pill">Loop</span><span class="pill">Mute</span><span class="pill">Fullscreen</span> then the volume knob. Drag the timeline to seek. The status line shows the neural model in use, frame counts, source → output size and the frame rate; it also names the active debug view or A/B mode.</p>
+
+  <div class="group g-pic"><h3>Picture</h3>
+    <dl>
+      <dt>DLSS ON / OFF</dt><dd>Enables the neural pass (<kbd>D</kbd>). Off shows the plain resized source.</dd>
+      <dt>Aspect</dt><dd>Fit (letterboxed) or Fill (cropped, never stretched).</dd>
+      <dt>Color</dt><dd>Opens <em>Image adjustments</em>: brightness, contrast, saturation, gamma, temperature, tint. Exports carry them (<code>--brightness</code> … <code>--tint</code>).</dd>
+      <dt>MV · Depth · Mask</dt><dd>Debug views of the three guides as the runtime receives them: the motion-vector field (hue = direction), the depth guide, and the ControlMask / bias plane. Keys <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd>; <kbd>1</kbd> final image, <kbd>2</kbd> DLSS input.</dd>
+      <dt>NR A / B / C</dt><dd>Which of the runtime's neural models draws the frame. They differ in look; A/B them on your footage.</dd>
+    </dl>
+  </div>
+
+  <div class="group g-job"><h3>Export &amp; Jobs</h3>
+    <dl>
+      <dt>Export</dt><dd>Writes <code>&lt;name&gt;_rezup.mp4</code> with the current look (see <a href="#export">Exporting</a>). Audio is muxed back from the source.</dd>
+      <dt>Compare</dt><dd>Original | processed side by side, <code>_rezup_compare.mp4</code>.</dd>
+      <dt>4K</dt><dd>Export with a 3840 px long side regardless of the Res setting, <code>_rezup_4k.mp4</code>.</dd>
+      <dt>Split</dt><dd>Left half original, right half processed, <code>_rezup_split.mp4</code>.</dd>
+      <dt>Res Auto / 4K / 8K / Native</dt><dd>Export size for Export, Compare and Split: the preview size, a 3840 or 7680 long side, or <em>Native</em> — the source size with no resize.</dd>
+      <dt>H.264 / HEVC / AV1</dt><dd>Export codec. HEVC and AV1 use NVENC.</dd>
+      <dt>Shot</dt><dd>Saves a side-by-side comparison of the current frame as <code>&lt;name&gt;_shot_N.png</code>.</dd>
+      <dt>Frame</dt><dd>Saves the processed frame alone as PNG.</dd>
+      <dt>GenFlow · GenDepth · GenMask</dt><dd>Run the Python guide generators on the loaded movie (see <a href="#generators">Built-in generators</a>). The result attaches to playback automatically.</dd>
+      <dt>SeedVR</dt><dd>Runs the SeedVR2 restoration pass, writes <code>&lt;name&gt;_svr.mp4</code>, then offers to load it. Strength comes from the SVR level.</dd>
+    </dl>
+  </div>
+
+  <div class="group g-mot"><h3>Motion</h3>
+    <p>Which motion vectors the neural pass receives. <strong>Zero</strong> binds an all-zero field (cleanest, no history drag). <strong>Pan</strong> derives one global pan vector per frame. <strong>Model</strong> uses the full estimated field — the built-in block matcher, or your <code>_flow.mp4</code> when the Flow toggle is on.</p>
+  </div>
+
+  <div class="group g-fx"><h3>Effects</h3>
+    <dl>
+      <dt>Bypass</dt><dd>Turns every addition off for a clean A/B (<kbd>B</kbd>). The neural pass stays on.</dd>
+      <dt>LUT</dt><dd>Applies the loaded .cube grade before the neural pass. <em>Load LUT…</em> picks a file; right-click the LUT button to remove it.</dd>
+      <dt>Sharp</dt><dd>Pre-sharpen: micro-contrast on the input, before the neural pass.</dd>
+      <dt>Tone</dt><dd>Tone preserve: keep the neural detail but restore the original tone and colours.</dd>
+      <dt>Flow</dt><dd>Use <code>&lt;name&gt;_flow.mp4</code> as the motion field when Motion is <em>Model</em>.</dd>
+      <dt>DepthMap</dt><dd>Feed <code>&lt;name&gt;_depth.mp4</code> instead of the built-in depth proxy. Visible in the Depth view; the current runtime does not use depth, so the picture itself does not change.</dd>
+      <dt>MaskNR</dt><dd>Bind <code>&lt;name&gt;_mask.mp4</code> into the neural pass as the ControlMask. Off by default — compare against MaskNR <em>off</em>, never against a blank mask.</dd>
+      <dt>Reset</dt><dd>Every look control back to its default: colour adjustments, all levels, the neural knobs, effect toggles on, Bypass off, Motion Zero. Keeps the loaded LUT, the model pick and the layout. The Image adjustments window's Reset does the same.</dd>
+    </dl>
+  </div>
+
+  <div class="group g-ins"><h3>Inspect</h3>
+    <p><strong>A/B ↔</strong> and <strong>A/B ↕</strong> split the picture between the untouched original and the full pipeline; drag the split line. <strong>Zoom −/+</strong> and <strong>Fit</strong>, or <kbd>Ctrl</kbd> + wheel over the picture, for 1:1 inspection; drag to pan when zoomed.</p>
+  </div>
+
+  <div class="group g-lvl"><h3>Levels</h3>
+    <div class="tbl"><table>
+      <tr><th>Slider</th><th>Range</th><th>What it does</th></tr>
+      <tr><td class="k">NR</td><td class="num">0 – 1</td><td>Neural pass intensity: wet/dry blend against the original.</td></tr>
+      <tr><td class="k">Struct</td><td class="num">0 – 2</td><td>Detail redraw strength. High values can boil on noisy sources.</td></tr>
+      <tr><td class="k">Sharp</td><td class="num">0 – 1</td><td>Pre-sharpen amount (before the neural pass).</td></tr>
+      <tr><td class="k">Post</td><td class="num">0 – 1</td><td>Post-sharpen on the neural output. Judge at 1:1 zoom.</td></tr>
+      <tr><td class="k">Tone</td><td class="num">0 – 1</td><td>Tone-preserve mix: 0 raw neural output, 1 original tone fully restored.</td></tr>
+      <tr><td class="k">Smooth</td><td class="num">0 – 1</td><td>Motion-compensated temporal smoothing of the neural delta. <strong>Export only</strong>, no live preview.</td></tr>
+      <tr><td class="k">LUT</td><td class="num">0 – 1</td><td>LUT strength.</td></tr>
+      <tr><td class="k">SVR</td><td class="num">0 – 1</td><td>SeedVR restoration strength for the next SeedVR job.</td></tr>
+    </table></div>
+    <p>Dragging a level also switches its effect on. Values persist in <code>SmackMyRezUp.ini</code>.</p>
+  </div>
+
+  <h3>Menus</h3>
+  <p><strong>File</strong> Open, Exit · <strong>Playback</strong> transport · <strong>Video</strong> aspect, image adjustments, the five views, fullscreen, <em>Control panel on the left</em> (swaps the columns: panel left, video and its controls right) · <strong>DLSS</strong> enable, estimated/flat depth proxy, mode/quality (Auto, Quality, Balanced, Performance, Ultra Performance, DLAA) — this picks how small the movie is decoded before the neural pass redraws it at output size; DLAA decodes at native size · <strong>Effects</strong> the toggles above, 4K via Lanczos + DLAA, Load/Clear LUT, Motion mode · <strong>Language</strong> · <strong>Help</strong> this page.</p>
+</section>
+
+<section id="keys">
+  <h2>Keyboard</h2>
+  <div class="tbl"><table>
+    <tr><th>Key</th><th>Action</th><th>Key</th><th>Action</th></tr>
+    <tr><td><kbd>Space</kbd></td><td>Play / pause</td><td><kbd>D</kbd></td><td>DLSS on / off</td></tr>
+    <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>Seek −10 s / +10 s</td><td><kbd>B</kbd></td><td>Bypass all effects</td></tr>
+    <tr><td><kbd>M</kbd></td><td>Mute</td><td><kbd>G</kbd></td><td>Estimated / flat depth proxy</td></tr>
+    <tr><td><kbd>F11</kbd> <kbd>Esc</kbd></td><td>Fullscreen / leave it</td><td><kbd>1</kbd>–<kbd>5</kbd></td><td>Final · Input · MV · Depth · Mask views</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Open a file</td><td><kbd>Ctrl</kbd>+<kbd>E</kbd></td><td>Image adjustments</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+wheel</td><td>Zoom the picture</td><td><kbd>F1</kbd></td><td>This manual</td></tr>
+  </table></div>
+  <p>Global hotkeys (work while another app such as ReShade has focus): <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Space</kbd> play/pause, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> seek, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd> mute, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>D</kbd> DLSS, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>C</kbd> adjustments, and the keyboard's media play/pause key. Drag &amp; drop a video or image onto the window to open it.</p>
+</section>
+
+<section id="sidecars">
+  <h2>Guide files (sidecars)</h2>
+  <p>A guide is an ordinary video that sits <strong>beside the movie with the same name plus a suffix</strong>. The player attaches it on load; the exporter takes it with a flag. Whether it is actually <em>bound</em> into the neural pass is a separate switch, listed in the last column.</p>
+  <div class="tbl"><table>
+    <tr><th>File</th><th>Carries</th><th>Pixel encoding</th><th>Bound when</th></tr>
+    <tr><td class="k"><code>&lt;name&gt;_flow.mp4</code></td><td>Motion vectors, one per pixel: where the current pixel <em>was</em> in the previous frame (current → previous, the DLSS convention)</td><td>RGB, <code>yuv444p</code>. R = dx, G = dy in <strong>source pixels</strong>, mapped from −24 … +24 to 0 … 255 (127.5 = no motion); B = 128. First frame all zero. +x right, +y down.</td><td>Motion = Model and the Flow toggle on; exporter <code>--flow-video</code> with <code>--mv estimated</code></td></tr>
+    <tr><td class="k"><code>&lt;name&gt;_depth.mp4</code></td><td>Relative depth</td><td>Grayscale (<code>gray</code> or <code>yuv420p</code>): <strong>bright = near</strong>, dark = far. Any consistent normalisation; the player inverts it into the runtime's 0 = near contract.</td><td>DepthMap toggle on; exporter <code>--depth-video</code> (+ <code>--nr-guides mv,depth</code>). The current runtime ignores depth.</td></tr>
+    <tr><td class="k"><code>&lt;name&gt;_mask.mp4</code></td><td>Where the neural pass should act</td><td>Grayscale: <strong>white = process here</strong>, black = leave alone; grey values are soft weights, feathered edges are fine.</td><td>MaskNR toggle on; exporter <code>--mask-video</code> with <code>--nr-guides mv,mask</code></td></tr>
+    <tr><td class="k"><code>&lt;name&gt;_mask_&lt;phrase&gt;.mp4</code></td><td>One mask per prompt phrase (from GenMask <code>--layers</code>)</td><td>Same as above</td><td>Kept for per-object control; not bound by the player yet — the union file is what attaches</td></tr>
+    <tr><td class="k"><code>&lt;name&gt;_svr.mp4</code></td><td>A SeedVR-restored version of the movie</td><td>Ordinary colour video</td><td>Loaded as the input when you accept the prompt after a SeedVR job</td></tr>
+  </table></div>
+  <ul>
+    <li>Resolution may differ from the movie — the guide is rescaled to the source size on decode (a size mismatch that cannot be rescaled is skipped and logged).</li>
+    <li>Match the frame rate and frame count. If the guide is shorter, its last frame is reused.</li>
+    <li>Guides are calibrated to the source geometry, so the exporter drops them when <code>--scaler lanczos</code> resizes on the CPU first.</li>
+    <li>Encode near-lossless (<code>-crf 6</code> or better): 8-bit values are already coarse — one flow step is 48/255 ≈ 0.19 px.</li>
+  </ul>
+</section>
+
+<section id="custom">
+  <h2>Make your own guides</h2>
+  <p>Anything that can produce an image sequence can feed the player: a 3D renderer's passes, another flow or depth model, or a mask painted by hand. Write the frames as PNG, then encode them with the ffmpeg that ships beside the exe.</p>
+
+  <h3>Motion vectors from raw values</h3>
+  <p>For each pixel with motion <code>(dx, dy)</code> in source pixels, current → previous:</p>
+<pre>R = clamp( dx / 48 × 255 + 127.5 , 0, 255 )
+G = clamp( dy / 48 × 255 + 127.5 , 0, 255 )
+B = 128</pre>
+  <p>If your source gives previous → current vectors (most optical-flow tools and Blender's Vector pass do), negate them first. Then:</p>
+<pre>ffmpeg -framerate 24 -i flow_%04d.png -c:v libx264 -preset fast -crf 6 -pix_fmt yuv444p movie_flow.mp4</pre>
+
+  <h3>Depth from any model or a Z pass</h3>
+  <p>Normalise so near is bright. From a renderer's Z (distance) pass: <code>value = 1 − (z − z_near) / (z_far − z_near)</code>, clamped 0…1, then ×255. Keep the normalisation stable across the shot or the guide will pulse.</p>
+<pre>ffmpeg -framerate 24 -i depth_%04d.png -c:v libx264 -preset fast -crf 6 -pix_fmt yuv420p movie_depth.mp4</pre>
+
+  <h3>Masks</h3>
+  <p>White where the neural pass should act. Paint it, threshold a Cryptomatte/object-ID pass, or export a rotoscope matte. Soft edges are welcome.</p>
+<pre>ffmpeg -framerate 24 -i mask_%04d.png -c:v libx264 -preset fast -crf 6 -pix_fmt yuv420p movie_mask.mp4</pre>
+  <p>Place the three files beside <code>movie.mp4</code>, reload it, and check each one in the MV / Depth / Mask views before binding.</p>
+
+  <h3>From Blender</h3>
+  <p>Blender's <strong>Vector</strong> pass is a true per-pixel geometric motion field with parallax — the same kind of data a game hands the runtime. Enable Vector, Z and Cryptomatte (or Object Index) in View Layer → Passes, save EXR, and convert with the formulas above (Vector stores previous→current and current→next in its four channels; use the first pair, negated). Blender's y axis points up, so negate dy as well.</p>
+</section>
+
+<section id="generators">
+  <h2>Built-in generators</h2>
+  <p>The Gen buttons run Python scripts from the <code>tools\</code> folder with a Python that has <code>torch</code>, <code>torchvision</code> and <code>transformers</code> (ComfyUI's <code>python_embeded\python.exe</code> is the reference setup; GenMask needs <code>transformers</code> 5.x, plus <code>sam2</code> for its fallback). First runs download model weights. SAM 3's weights are gated: ask for access at <code>huggingface.co/facebook/sam3</code> and sign in (<code>hf auth login</code>, or set <code>HF_TOKEN</code>) - without that, GenMask falls back to Grounding DINO + SAM 2.1, which is not gated.</p>
+  <div class="tbl"><table>
+    <tr><th>Button · script</th><th>Model</th><th>Options (command line)</th></tr>
+    <tr><td class="k">GenFlow · <code>make_flow_video.py</code></td><td>RAFT-small (torchvision), 12 refinement steps, inference long side 512 px</td><td><code>--size</code>, <code>--iters</code>, <code>--backend trt</code></td></tr>
+    <tr><td class="k">GenDepth · <code>make_depth_video.py</code></td><td>Depth Anything V2 Small, long side 518 px, aspect kept, temporally smoothed 2–98 % range</td><td><code>--size</code>, <code>--fp32</code>, <code>--backend trt</code></td></tr>
+    <tr><td class="k">GenMask · <code>make_mask_video.py</code></td><td>SAM 3 (text → masks directly), falling back to Grounding DINO + SAM 2.1</td><td><code>--prompt "person. face. hair."</code>, <code>--model auto|sam3|sam2</code>, <code>--layers</code>, <code>--invert</code>, <code>--feather N</code>, <code>--threshold</code>, <code>--mask-threshold</code>, <code>--detect-every N</code></td></tr>
+    <tr><td class="k">SeedVR · <code>run_seedvr.py</code></td><td>SeedVR2 restoration (ComfyUI pack)</td><td><code>--strength</code></td></tr>
+  </table></div>
+  <p><strong>Prompt syntax</strong> for GenMask: lower-case phrases separated by periods — <code>person. face.</code> rather than "person and face". With <code>--layers</code> (what the button uses) you also get one <code>_mask_&lt;phrase&gt;.mp4</code> per phrase. The prompt box's <strong>Models</strong> dropdown picks the sizes and is remembered: <em>Fast</em> (DINO tiny + SAM small), <em>Balanced</em> (DINO base + SAM base+), <em>Best</em> (DINO base + SAM large, about 3× slower; the default). First use of a size downloads its weights.</p>
+  <p><strong>TensorRT</strong>: <code>--backend trt</code> compiles the flow or depth model into an engine on first use (5–30 s, cached in <code>engines\</code>) and runs 3–4× faster with matching output. Needs the CUDA Toolkit and the TensorRT SDK on PATH (or <code>SMRU_TENSORRT_DIR</code>), plus its Python wheel, <code>onnx</code> and <code>onnxscript</code> in the tools interpreter. Every RAFT engine is verified against the torch model before use, because TensorRT's kernel search is not reproducible.</p>
+</section>
+
+<section id="export">
+  <h2>Exporting</h2>
+  <p>An export runs the headless exporter with the look you see: tone preserve and mix, sharpen, post-sharpen, Lanczos, NR smooth, motion mode, codec, the neural model and its intensity/structure/skin/automask, the LUT and strength, the Color window adjustments, the flow, depth and mask guides for the toggles that are on — and the DLSS state: with DLSS OFF the export skips the neural pass too (<code>--dlss off</code>), giving the plain resize with the effects.</p>
+  <p>The player writes the full exporter command line to <code>SmackMyRezUp.log</code> beside itself; the exporter's own log is <code>SmackMyRezUpExport.log</code> in your temp folder (<code>%TEMP%</code>). If an export fails, the message shows the exporter's last lines.</p>
+</section>
+
+<section id="headless">
+  <h2>Headless exporter</h2>
+  <p><code>SmackMyRezUpExport.exe</code> is the same pipeline as a console tool, for batches and hosts such as ComfyUI. Run it without arguments for the full list. The ones you will reach for:</p>
+  <div class="tbl"><table>
+    <tr><th>Flag</th><th>Meaning</th></tr>
+    <tr><td class="k"><code>--input F --export F</code></td><td>Source and destination.</td></tr>
+    <tr><td class="k"><code>--output-size WxH</code></td><td>Export size: the frame is resized to it and the neural pass redraws every output pixel 1:1. Omit for native size.</td></tr>
+    <tr><td class="k"><code>--nr-style 0|1|2</code></td><td>Model A / B / C</td></tr>
+    <tr><td class="k"><code>--nr-intensity --nr-structure --nr-skin --nr-automask</code></td><td>The neural knobs (0–1, 0–2, −1 or 0–2, on/off)</td></tr>
+    <tr><td class="k"><code>--mv zero|global|estimated</code></td><td>Motion mode</td></tr>
+    <tr><td class="k"><code>--flow-video --depth-video --mask-video</code></td><td>Attach guide files</td></tr>
+    <tr><td class="k"><code>--nr-guides off|on|all|mv,depth,mask</code></td><td>Which guides are bound (default: MVec only)</td></tr>
+    <tr><td class="k"><code>--nr-mask-mode bias|white|inv</code></td><td>ControlMask content when bound without a mask video</td></tr>
+    <tr><td class="k"><code>--tone preserve|nr --tone-mix X</code></td><td>Tone preserve and its mix</td></tr>
+    <tr><td class="k"><code>--sharpen --post-sharpen --nr-smooth</code></td><td>Pre-/post-sharpen, temporal smoothing of the neural delta</td></tr>
+    <tr><td class="k"><code>--lut F.cube --lut-strength X</code></td><td>Creative LUT before the neural pass (a LUT that fails to load is a warning, not a failed export)</td></tr>
+    <tr><td class="k"><code>--brightness --contrast --saturation --gamma --temperature --tint</code></td><td>The Color window adjustments (stops −2…2; 0…3; 0…3; 0.25…3; −1…1; −1…1)</td></tr>
+    <tr><td class="k"><code>--dlss on|off</code></td><td>off skips the neural pass: resize + effects only, the player's DLSS OFF look</td></tr>
+    <tr><td class="k"><code>--scaler lanczos</code></td><td>CPU Lanczos3 upscale, then a DLAA detail pass; drops sidecars</td></tr>
+    <tr><td class="k"><code>--codec x264|hevc|av1 --crf N</code></td><td>Encoder and quality</td></tr>
+    <tr><td class="k"><code>--compare --split</code></td><td>Side-by-side, or a split-down-the-middle output</td></tr>
+    <tr><td class="k"><code>--raw --bits 8|16 --serve</code></td><td>Frame piping over stdin/stdout, 16-bit input, persistent batch server (greets with <code>SMRU-SERVE 1</code>)</td></tr>
+  </table></div>
+  <p>Progress and diagnostics go to stderr as <code>[smru] …</code> lines; <code>[smru] frame N</code> drives the player's progress bar.</p>
+</section>
+
+<section id="settings">
+  <h2>Settings &amp; files</h2>
+  <dl>
+    <dt><code>SmackMyRezUp.ini</code></dt><dd>Beside the player. <code>[SmackMyRezUp]</code> pipeline and UI state, <code>[VideoAdjustments]</code>, <code>[General] Language=</code>, <code>[Tools] Python=</code>.</dd>
+    <dt><code>SMRU_PYTHON</code></dt><dd>Interpreter for the generators; wins over <code>[Tools] Python=</code>.</dd>
+    <dt><code>SMRU_TOOLS_DIR</code></dt><dd>Folder with the Python tools when they are not beside the exe or the checkout.</dd>
+    <dt><code>SMRU_COMFYUI_DIR</code></dt><dd>ComfyUI portable root (SeedVR pack and weights).</dd>
+    <dt><code>SMRU_BIN_DIR</code></dt><dd>Where the tools find ffmpeg/ffprobe and the exporter; the player sets it for its children.</dd>
+    <dt><code>SMRU_MODELS_DIR</code></dt><dd>Where the generators cache downloaded weights. Default: <code>models\</code> beside the exe (<code>models\huggingface</code> for Depth Anything and SAM 3, <code>models\torch</code> for RAFT), so copying an install carries its models. The player publishes this as <code>HF_HOME</code> / <code>TORCH_HOME</code> unless you already set either, or the app folder is read-only. SeedVR2 weights stay in the ComfyUI install instead.</dd>
+    <dt><code>SMRU_TENSORRT_DIR</code></dt><dd>TensorRT SDK root or <code>bin</code> when not on PATH.</dd>
+    <dt><code>SMRU_ENGINE_DIR</code></dt><dd>TensorRT engine cache (default <code>engines\</code> beside the checkout).</dd>
+    <dt><code>luts\</code>, <code>tools\</code></dt><dd>Found beside the exe or by walking up from <code>build\Release\</code>.</dd>
+  </dl>
+  <p>The player is self-contained: on first launch it extracts <code>nvngx_dlssnr.dll</code>, ffmpeg/ffprobe, the exporter, the fonts, this manual, the <code>tools\</code> generator scripts and the sample <code>luts\</code> beside itself. Third-party files and the sample LUTs are never overwritten (swap in your own runtime build or edit a grade freely); the exporter, fonts, manual and tools are refreshed when a newer player is dropped in. The generators still need a Python with torch — only the scripts ship.</p>
+</section>
+
+<section id="trouble">
+  <h2>Troubleshooting</h2>
+  <dl>
+    <dt>The Levels sliders are missing</dt><dd>They are below the bottom bar on a short window. Wheel over the panel to scroll, or collapse a group.</dd>
+    <dt>"… needs tools\make_….py"</dt><dd>The <code>tools\</code> folder beside the player was deleted or could not be extracted (read-only folder?). Restart the player so it extracts again, or set <code>SMRU_TOOLS_DIR</code> to a checkout's <code>tools</code> folder.</dd>
+    <dt>"… needs a Python with torch"</dt><dd>Set <code>SMRU_PYTHON</code> or <code>[Tools] Python=</code> to a Python that has torch (ComfyUI's embedded one).</dd>
+    <dt>Export failed</dt><dd>The message shows the exporter's last lines; the full log is <code>SmackMyRezUpExport.log</code> in <code>%TEMP%</code>. The player's own log carries the exact command line.</dd>
+    <dt>My LUT disappeared</dt><dd>The path in the INI no longer exists. The player looks for the same file name in <code>luts\</code> and repairs the setting; otherwise load it again.</dd>
+    <dt>DepthMap does nothing</dt><dd>Correct — the current runtime ignores depth. The Depth view still shows what it is being handed.</dd>
+    <dt>MaskNR looks different even with a blank mask</dt><dd>Binding the ControlMask changes the output by itself. Always A/B against MaskNR off.</dd>
+    <dt>Boiling detail on static shots</dt><dd>Lower Struct, raise Smooth for exports, or set Motion to Zero.</dd>
+    <dt>A ghost of the previous shot after a cut</dt><dd>The exporter resets the neural history on detected cuts (<code>--cut-reset on</code>); raise <code>--cut-warmup</code> if the first frame after a cut is soft.</dd>
+  </dl>
+</section>
+
+<section id="better">
+  <h2>Better guides</h2>
+  <p>The runtime was trained on a game's exact per-pixel motion field and depth buffer. Everything recovered from pixels is an approximation, so the guides are where the biggest gains remain.</p>
+  <h3>Motion vectors</h3>
+  <ul>
+    <li><strong>Resolution.</strong> GenFlow estimates at a 512 px long side and upsamples; run <code>--size</code> at the source width for HD material.</li>
+    <li><strong>Model.</strong> RAFT-small trades accuracy for speed; RAFT-large or SEA-RAFT are drop-in upgrades with the same output contract.</li>
+    <li><strong>Consistency.</strong> A forward–backward check (flow t→t−1 against t−1→t) finds occluded and unreliable pixels; zeroing those beats trusting a wrong vector, because the runtime rewards smooth, consistent fields.</li>
+    <li><strong>Geometry.</strong> Fit the camera motion to the flow, render the dense field from the depth guide (parallax ∝ 1/depth), and keep RAFT only for the residual of independently moving objects. That reproduces the smooth, depth-shaped field a renderer produces.</li>
+    <li><strong>Precision.</strong> The 8-bit ±24 px encoding quantises to 0.19 px; a 16-bit sidecar removes that.</li>
+    <li><strong>Ground truth.</strong> Rendered footage can carry its real Vector pass — see <a href="#custom">From Blender</a>.</li>
+  </ul>
+  <h3>Depth</h3>
+  <ul>
+    <li>Depth Anything V2 <em>Large</em> is markedly better than Small at the same interface; <em>Video Depth Anything</em> adds temporal consistency, which is what a per-frame model lacks most.</li>
+    <li>Until a runtime build reads <code>DLSSNR.Depth</code>, better depth improves the Depth view and nothing else — spend the effort on motion first.</li>
+  </ul>
+</section>
+
+<footer>SmackMyRezUp is an experiment around a pre-release NVIDIA component with an undocumented interface; behaviour described here was established by measurement and can change with runtime builds. Not affiliated with NVIDIA. DLSS and NVIDIA are trademarks of NVIDIA Corporation.</footer>
+</main>
+</div>
+</body>
+</html>

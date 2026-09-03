@@ -1,0 +1,5 @@
+// SmackMyRezUpExport.exe resources: version block only.
+#define SMRU_RC_FILE_DESCRIPTION  "SmackMyRezUp headless exporter"
+#define SMRU_RC_INTERNAL_NAME     "SmackMyRezUpExport"
+#define SMRU_RC_ORIGINAL_FILENAME "SmackMyRezUpExport.exe"
+#include "VersionInfo.rc"
