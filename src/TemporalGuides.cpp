@@ -118,38 +118,93 @@ void TemporalGuideGenerator::EstimateFlow(const std::vector<float>& cur, const s
                                            std::vector<float>& mismatch,
                                            float& globalX, float& globalY, float& globalCost) const {
     const int w = int(gw), h = int(gh);
-    // First find a coarse whole-frame translation. This is especially valuable for camera pans.
-    float bestGlobal = std::numeric_limits<float>::max();
-    float zeroGlobal = std::numeric_limits<float>::max();
-    int bestGX = 0, bestGY = 0;
-    constexpr int globalRadius = 7;
-    for (int dy = -globalRadius; dy <= globalRadius; ++dy) {
-        for (int dx = -globalRadius; dx <= globalRadius; ++dx) {
-            float sad = 0.0f; int n = 0;
-            for (int y = 4; y < h - 4; y += 4) {
-                const int oy = y + dy; if (oy < 0 || oy >= h) continue;
-                for (int x = 4; x < w - 4; x += 4) {
-                    const int ox = x + dx; if (ox < 0 || ox >= w) continue;
-                    sad += std::abs(cur[size_t(y) * w + x] - prev[size_t(oy) * w + ox]);
-                    ++n;
-                }
+
+    // Stage lighting - strobes, colour washes, a practical switching on - changes
+    // the whole frame's level and contrast while its STRUCTURE stays put. A raw
+    // SAD reads that as a total loss of correspondence, so globalCost crosses the
+    // cut threshold and the caller resets the neural history. On a locked-off shot
+    // under flashing lights that fires several times a second, and every reset
+    // costs the temporal model its convergence.
+    //
+    // A lighting change is well modelled as an affine map of the previous frame,
+    // cur ~= a*prev + b. Fit a and b by least squares and offer the matched frame
+    // to the global search below, so the cost can measure structure rather than
+    // exposure. A real cut has different structure, which no single gain/offset
+    // can explain away, so it still scores high. The matched frame is a
+    // CANDIDATE only: a colour wash is not a pure luma gain, and a fit that
+    // misfires must never make a frame look less like its predecessor than the
+    // raw comparison says it is.
+    std::vector<float> matched;
+    const std::vector<float>* pv = &prev;
+    {
+        double sp = 0.0, sc = 0.0, spp = 0.0, spc = 0.0;
+        int n = 0;
+        for (int y = 4; y < h - 4; y += 4) {
+            for (int x = 4; x < w - 4; x += 4) {
+                const double p = prev[size_t(y) * w + x], c = cur[size_t(y) * w + x];
+                sp += p; sc += c; spp += p * p; spc += p * c; ++n;
             }
-            if (n) sad /= float(n);
-            // Mild penalty avoids jumping to large vectors in flat/noisy regions.
-            sad += 0.0015f * float(dx * dx + dy * dy);
-            if (dx == 0 && dy == 0) zeroGlobal = sad;
-            if (sad < bestGlobal) { bestGlobal = sad; bestGX = dx; bestGY = dy; }
+        }
+        if (n > 8) {
+            const double mp = sp / n, mc = sc / n;
+            const double var = spp / n - mp * mp;
+            const double cov = spc / n - mp * mc;
+            // A flat previous frame carries no gain information; leave it alone.
+            double a = var > 1e-6 ? cov / var : 1.0;
+            a = std::clamp(a, 0.25, 4.0);
+            const double b = mc - a * mp;
+            // Only pay for the rewrite when the exposure actually moved.
+            if (std::abs(a - 1.0) > 0.01 || std::abs(b) > 0.004) {
+                matched.resize(prev.size());
+                for (size_t i = 0; i < prev.size(); ++i)
+                    matched[i] = float(std::clamp(a * prev[i] + b, 0.0, 1.0));
+            }
         }
     }
-    // A small independently moving object on an otherwise flat/static frame can make a
-    // whole-frame translation look marginally better than zero. Do not smear that motion
-    // over every pixel unless the global shift wins by a meaningful margin. Local block
-    // matching below will still recover object motion around the zero/global seed.
-    if ((bestGX != 0 || bestGY != 0) && std::isfinite(zeroGlobal) &&
-        (zeroGlobal - bestGlobal) < 0.012f) {
-        bestGX = bestGY = 0;
-        bestGlobal = zeroGlobal;
+
+    // First find a coarse whole-frame translation. This is especially valuable for camera pans.
+    constexpr int globalRadius = 7;
+    auto searchGlobal = [&](const std::vector<float>& ref, int& gx, int& gy) {
+        float best = std::numeric_limits<float>::max();
+        float zero = std::numeric_limits<float>::max();
+        gx = gy = 0;
+        for (int dy = -globalRadius; dy <= globalRadius; ++dy) {
+            for (int dx = -globalRadius; dx <= globalRadius; ++dx) {
+                float sad = 0.0f; int n = 0;
+                for (int y = 4; y < h - 4; y += 4) {
+                    const int oy = y + dy; if (oy < 0 || oy >= h) continue;
+                    for (int x = 4; x < w - 4; x += 4) {
+                        const int ox = x + dx; if (ox < 0 || ox >= w) continue;
+                        sad += std::abs(cur[size_t(y) * w + x] - ref[size_t(oy) * w + ox]);
+                        ++n;
+                    }
+                }
+                if (n) sad /= float(n);
+                // Mild penalty avoids jumping to large vectors in flat/noisy regions.
+                sad += 0.0015f * float(dx * dx + dy * dy);
+                if (dx == 0 && dy == 0) zero = sad;
+                if (sad < best) { best = sad; gx = dx; gy = dy; }
+            }
+        }
+        // A small independently moving object on an otherwise flat/static frame can make a
+        // whole-frame translation look marginally better than zero. Do not smear that motion
+        // over every pixel unless the global shift wins by a meaningful margin. Local block
+        // matching below will still recover object motion around the zero/global seed.
+        if ((gx != 0 || gy != 0) && std::isfinite(zero) && (zero - best) < 0.012f) {
+            gx = gy = 0;
+            best = zero;
+        }
+        return best;
+    };
+    int bestGX = 0, bestGY = 0;
+    float bestGlobal = searchGlobal(prev, bestGX, bestGY);
+    if (!matched.empty()) {
+        int mx = 0, my = 0;
+        const float mBest = searchGlobal(matched, mx, my);
+        if (mBest < bestGlobal) { bestGlobal = mBest; bestGX = mx; bestGY = my; pv = &matched; }
     }
+    // Whichever frame won the global search is the one the local stage refines.
+    const std::vector<float>& pref = *pv;
     globalX = float(bestGX); globalY = float(bestGY); globalCost = bestGlobal;
 
     flowX.assign(size_t(gw) * gh, float(bestGX));
@@ -169,7 +224,7 @@ void TemporalGuideGenerator::EstimateFlow(const std::vector<float>& cur, const s
             for (int oy = -localRadius; oy <= localRadius; ++oy) {
                 for (int ox = -localRadius; ox <= localRadius; ++ox) {
                     const int dx = bestGX + ox, dy = bestGY + oy;
-                    float cost = PatchSad(cur, prev, x, y, dx, dy, w, h);
+                    float cost = PatchSad(cur, pref, x, y, dx, dy, w, h);
                     cost += 0.002f * float(ox * ox + oy * oy);
                     if (cost < best) { best = cost; bx = dx; by = dy; }
                 }
@@ -199,7 +254,7 @@ void TemporalGuideGenerator::EstimateFlow(const std::vector<float>& cur, const s
                 for (int syi = 0; syi < subN; ++syi) {
                     for (int sxi = 0; sxi < subN; ++sxi) {
                         const float sy = sub[syi], sx = sub[sxi];
-                        float c = PatchSadSubpixel(cur, prev, x, y, float(bx) + sx, float(by) + sy, w, h);
+                        float c = PatchSadSubpixel(cur, pref, x, y, float(bx) + sx, float(by) + sy, w, h);
                         c += 0.0015f * (sx * sx + sy * sy);
                         cost[syi][sxi] = c;
                         if (c < refined) { refined = c; bix = sxi; biy = syi; }
