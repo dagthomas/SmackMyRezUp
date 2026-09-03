@@ -89,9 +89,6 @@ struct Options {
                                       // runtime reads MVec with the OPPOSITE sign
                                       // of our current->previous field (measured),
                                       // so -1 is the correct default.
-    bool preGrainStatic = false;      // --pre-grain-static on: freeze the pre-grain
-                                      // seed - static micro-texture for the NR pass
-                                      // to amplify, without animated-grain crawl
     uint32_t nrGuides = 1;            // --nr-guides bitmask words: off | on(=mv) |
                                       // mv | depth | mask | all, comma-separable.
                                       // Binding ControlMask suppresses the neural
@@ -126,10 +123,6 @@ struct Options {
     std::wstring lutPath;             // --lut file.cube (applied before DLSS/NR)
     float lutStrength = 1.0f;         // --lut-strength 0..1
     float sharpen = 0.0f;             // --sharpen 0..1: pre-DLSS unsharp mask
-    float grain = 0.0f;               // --grain 0..1: film grain on the final image
-    float preGrain = 0.0f;            // --pre-grain 0..1: grain injected BEFORE DLSS/NR
-    bool grainColor = false;          // --grain-color on|off: per-channel colour vs mono film
-    bool preGrainColor = false;       // --pre-grain-color on|off
     bool depthIn = false;             // --depth-in (raw mode): each frame is followed by
                                       // a W*H*2 R16 depth plane (0 = near .. 1 = far)
     std::wstring depthVideo;          // --depth-video (file mode): grayscale depth movie
@@ -195,7 +188,6 @@ L"  --mv MODE          zero (default) | global (one pan vector/frame) | estimate
 L"  --nr-guides M      off | on (= mv, default) | all | mv,depth,mask combos\n"
 L"  --nr-mask-mode M   bias (default) | white | inv: ControlMask content when bound\n"
 L"  --nr-mvscale S     MVec scale reported to the runtime (default -1, measured sign)\n"
-L"  --pre-grain-static M on | off (default): freeze the pre-grain seed (no crawl)\n"
 L"  --temporal MODE    on (default) | off (reset DLSS history every frame)\n"
 L"  --cut-reset MODE   on (default) | off: reset the DLSS history on detected\n"
 L"                     scene cuts (correspondence loss, robust to fast pans)\n"
@@ -231,10 +223,6 @@ L"                     | nr (raw neural output, with its gamma/color shifts)\n"
 L"  --tone-mix X       0..1 blend raw NR -> preserved (default 0.7)\n"
 L"  --sharpen X        0..1 pre-DLSS unsharp mask so the neural pass sees more\n"
 L"                     micro-contrast (default 0 = off; try 0.3-0.6)\n"
-L"  --grain X          0..1 fine film grain on the final image (fights waxy\n"
-L"                     AI skin; try 0.15-0.35)\n"
-L"  --pre-grain X      0..1 grain injected BEFORE DLSS/NR so the neural pass\n"
-L"                     enhances it as skin texture (try 0.2-0.4)\n"
 L"  --nr-smooth X      0..1 temporal smoothing of the NR contribution (default 0;\n"
 L"                     the player's NR Smooth pass; helps boiling detail on\n"
 L"                     static shots, can trail on motion)\n"
@@ -329,8 +317,6 @@ Options ParseArgs() {
         else if (a == L"--nr-smooth") unit01(o.nrSmooth);
         else if (a == L"--sharpen") unit01(o.sharpen);
         else if (a == L"--post-sharpen") unit01(o.postSharpen);
-        else if (a == L"--grain") unit01(o.grain);
-        else if (a == L"--pre-grain") unit01(o.preGrain);
         else if (a == L"--lut-strength") unit01(o.lutStrength);
         else if (a == L"--nr-structure") inRange(o.nrStructure, 0.0, 2.0, L"0..2");
         // -1 is the "follow the local structure strength" sentinel, not a value
@@ -339,9 +325,6 @@ Options ParseArgs() {
         else if (a == L"--nr-style") { const int v = _wtoi(next().c_str()); if (v >= 0 && v <= 2) o.nrStyle = uint32_t(v); else badValue(L"0|1|2"); }
         else if (a == L"--bits") { const int b = _wtoi(next().c_str()); if (b == 8 || b == 16) o.bits = b; else badValue(L"8|16"); }
         else if (a == L"--nr-automask") onOff(o.nrAutoMask);
-        else if (a == L"--grain-color") onOff(o.grainColor);
-        else if (a == L"--pre-grain-color") onOff(o.preGrainColor);
-        else if (a == L"--pre-grain-static") onOff(o.preGrainStatic);
         else if (a == L"--cut-reset") onOff(o.cutReset);
         else if (a == L"--temporal") { bool on = !o.temporalOff; onOff(on); o.temporalOff = !on; }
         else if (a == L"--dlss") { bool on = !o.dlssOff; onOff(on); o.dlssOff = !on; }
@@ -672,11 +655,6 @@ struct Pipeline {
         // Tone preserve is the renderer's pass (the one the preview shows): it
         // recombines before the colour adjustments, so an export is the preview.
         renderer.SetToneMix(o.tonePreserve ? o.toneMix : 0.0f);
-        renderer.SetGrain(o.grain);
-        renderer.SetPreGrain(o.preGrain);
-        renderer.SetPreGrainStatic(o.preGrainStatic);
-        renderer.SetGrainColor(o.grainColor);
-        renderer.SetPreGrainColor(o.preGrainColor);
         fprintf(stderr, SMRU_LOG_TAG " engine=direct style=%u intensity=%.2f structure=%.2f skin=%.2f automask=%s\n",
                 o.nrStyle, o.nrIntensity, o.nrStructure, o.nrSkin, o.nrAutoMask ? "on" : "off");
         fprintf(stderr, SMRU_LOG_TAG " init %ux%u -> %ux%u @ %.3f fps, jitter=%s, dlss_input=%ux%u, guides=%ux%u\n",

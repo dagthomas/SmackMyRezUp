@@ -53,7 +53,7 @@ enum : UINT {
     IDM_PLAY=200, IDM_STOP, IDM_BACK10, IDM_FWD10, IDM_MUTE,
     IDM_DLSS=300, IDM_VIEW_FINAL, IDM_VIEW_INPUT, IDM_VIEW_MV, IDM_VIEW_DEPTH, IDM_VIEW_MASK, IDM_DEPTH_MODE,
     IDM_LUT_LOAD=320, IDM_LUT_CLEAR, IDM_MOTION_ZERO=324, IDM_MOTION_GLOBAL, IDM_MOTION_EST,
-    IDM_FX_LUT=340, IDM_FX_SHARPEN, IDM_FX_PREGRAIN, IDM_FX_TONE, IDM_FX_GRAIN, IDM_FX_FLOW, IDM_FX_DEPTHMAP, IDM_FX_MASK, IDM_FX_BYPASS, IDM_FX_LANCZOS4K, IDM_HELP=600, IDM_PANEL_LEFT,
+    IDM_FX_LUT=340, IDM_FX_SHARPEN, IDM_FX_TONE, IDM_FX_FLOW, IDM_FX_DEPTHMAP, IDM_FX_MASK, IDM_FX_BYPASS, IDM_FX_LANCZOS4K, IDM_HELP=600, IDM_PANEL_LEFT,
     IDM_NRMODEL_A=350, IDM_NRMODEL_B, IDM_NRMODEL_C, IDM_SHOT,
     IDM_QUALITY_AUTO=330, IDM_QUALITY_QUALITY, IDM_QUALITY_BALANCED, IDM_QUALITY_PERFORMANCE, IDM_QUALITY_ULTRAPERF, IDM_QUALITY_DLAA,
     IDM_ASPECT_FIT=400, IDM_ASPECT_FILL, IDM_FULLSCREEN, IDM_VIDEO_ADJUSTMENTS,
@@ -77,8 +77,6 @@ static constexpr int IDC_ADJ_TEMPERATURE = 7105;
 static constexpr int IDC_ADJ_TINT = 7106;
 static constexpr int IDC_ADJ_TONEMIX = 7107;
 static constexpr int IDC_ADJ_SHARPEN = 7108;
-static constexpr int IDC_ADJ_GRAIN = 7109;
-static constexpr int IDC_ADJ_PREGRAIN = 7112;
 static constexpr int IDC_ADJ_SVRSTRENGTH = 7113;
 static constexpr int IDC_ADJ_POSTSHARPEN = 7114;
 static constexpr int IDC_ADJ_NRINTENSITY = 7115;
@@ -497,18 +495,12 @@ private:
         m_sharpen=std::clamp(ReadSetting(L"Sharpen",0.0f),0.0f,1.0f);
         m_postSharpen=std::clamp(ReadSetting(L"PostSharpen",0.0f),0.0f,1.0f);
         m_lanczos4K=ReadSetting(L"Lanczos4K",0.0f)>0.5f;
-        m_grain=std::clamp(ReadSetting(L"Grain",0.0f),0.0f,1.0f);
-        m_preGrain=std::clamp(ReadSetting(L"PreGrain",0.0f),0.0f,1.0f);
-        m_grainColor=ReadSetting(L"GrainColor",0.0f)>0.5f;
-        m_preGrainColor=ReadSetting(L"PreGrainColor",0.0f)>0.5f;
         m_lutStrength=std::clamp(ReadSetting(L"LutStrength",1.0f),0.0f,1.0f);
         m_svrStrength=std::clamp(ReadSetting(L"SvrStrength",0.7f),0.0f,1.0f);
         m_motionMode=std::clamp(int(ReadSetting(L"Motion",0.0f)),0,2);
         m_fxLut=ReadSetting(L"FxLut",1.0f)>0.5f;
         m_fxSharpen=ReadSetting(L"FxSharpen",1.0f)>0.5f;
-        m_fxPreGrain=ReadSetting(L"FxPreGrain",1.0f)>0.5f;
         m_fxTone=ReadSetting(L"FxTone",1.0f)>0.5f;
-        m_fxGrain=ReadSetting(L"FxGrain",1.0f)>0.5f;
         m_fxFlow=ReadSetting(L"FxFlow",1.0f)>0.5f;
         m_fxDepth=ReadSetting(L"FxDepth",1.0f)>0.5f;
         // Off by default: binding ControlMask changes the output on its own
@@ -542,18 +534,12 @@ private:
         WriteSetting(L"Sharpen",m_sharpen);
         WriteSetting(L"PostSharpen",m_postSharpen);
         WriteSetting(L"Lanczos4K",m_lanczos4K?1.0f:0.0f);
-        WriteSetting(L"Grain",m_grain);
-        WriteSetting(L"PreGrain",m_preGrain);
-        WriteSetting(L"GrainColor",m_grainColor?1.0f:0.0f);
-        WriteSetting(L"PreGrainColor",m_preGrainColor?1.0f:0.0f);
         WriteSetting(L"LutStrength",m_lutStrength);
         WriteSetting(L"SvrStrength",m_svrStrength);
         WriteSetting(L"Motion",float(m_motionMode));
         WriteSetting(L"FxLut",m_fxLut?1.0f:0.0f);
         WriteSetting(L"FxSharpen",m_fxSharpen?1.0f:0.0f);
-        WriteSetting(L"FxPreGrain",m_fxPreGrain?1.0f:0.0f);
         WriteSetting(L"FxTone",m_fxTone?1.0f:0.0f);
-        WriteSetting(L"FxGrain",m_fxGrain?1.0f:0.0f);
         WriteSetting(L"FxFlow",m_fxFlow?1.0f:0.0f);
         WriteSetting(L"FxDepth",m_fxDepth?1.0f:0.0f);
         WriteSetting(L"FxMask",m_fxMask?1.0f:0.0f);
@@ -587,8 +573,6 @@ private:
     float FxSharpen()const{return (m_bypassFX||!m_fxSharpen)?0.0f:m_sharpen;}
     float FxPostSharpen()const{return m_bypassFX?0.0f:m_postSharpen;}
     float FxNrSmooth()const{return m_bypassFX?0.0f:m_nrSmooth;}
-    float FxGrain()const{return (m_bypassFX||!m_fxGrain)?0.0f:m_grain;}
-    float FxPreGrain()const{return (m_bypassFX||!m_fxPreGrain)?0.0f:m_preGrain;}
     float FxLutStrength()const{return (m_bypassFX||!m_fxLut)?0.0f:m_lutStrength;}
     bool FxFlowOn()const{return !m_bypassFX&&m_fxFlow;}
     bool FxDepthOn()const{return !m_bypassFX&&m_fxDepth;}
@@ -601,10 +585,6 @@ private:
             m_renderer->SetPreSharpen(FxSharpen());
             m_renderer->SetPostSharpen(FxPostSharpen());
             m_renderer->SetNRSmooth(FxNrSmooth());
-            m_renderer->SetGrain(FxGrain());
-            m_renderer->SetPreGrain(FxPreGrain());
-            m_renderer->SetGrainColor(m_grainColor);
-            m_renderer->SetPreGrainColor(m_preGrainColor);
             m_renderer->SetLUTStrength(FxLutStrength());
             m_renderer->SetExternalFlowEnabled(FxFlowOn());
             m_renderer->SetExternalDepthEnabled(FxDepthOn());
@@ -619,7 +599,7 @@ private:
             m_renderer->SetFxBypassIndicator(m_bypassFX);
             // Direct-NR knobs are read per evaluate, so this is fully live.
             m_renderer->SetNRSettings(CurrentNRSettings());
-            // While paused, NR/pre-sharpen/pre-grain live in the RENDER pass, so a
+            // While paused, NR/pre-sharpen live in the RENDER pass, so a
             // plain re-present would show nothing: re-run the current frame through
             // the full pipeline instead so every slider is live on a still frame.
             if(refreshPaused&&!m_playing&&!m_seeking){
@@ -1801,9 +1781,6 @@ private:
         // on: a crisp deterministic scaler in front of the NR detail pass,
         // instead of the bilinear default.
         if(m_lanczos4K&&(upW>m_decoder.NativeWidth()||upH>m_decoder.NativeHeight()))cmd<<L" --scaler lanczos";
-        // Grain and pre-grain are deliberately not forwarded: animated noise
-        // before or after the NR pass measures as pure temporal crawl, and the
-        // exporter defaults them to 0/off.
         if(FxNrSmooth()>0.001f)cmd<<L" --nr-smooth "<<std::fixed<<std::setprecision(2)<<FxNrSmooth();
         cmd<<L" --mv "<<(m_motionMode==0?L"zero":(m_motionMode==1?L"global":L"estimated"));
         cmd<<L" --codec "<<(m_exportCodec==2?L"av1":m_exportCodec==1?L"hevc":L"x264");
@@ -2040,7 +2017,7 @@ private:
     // Zero. The loaded LUT file, the model pick and the layout are kept.
     void ResetAll(){
         m_colorSettings={};
-        m_toneMix=0.0f;m_sharpen=0.0f;m_postSharpen=0.0f;m_grain=0.0f;m_preGrain=0.0f;m_nrSmooth=0.0f;
+        m_toneMix=0.0f;m_sharpen=0.0f;m_postSharpen=0.0f;m_nrSmooth=0.0f;
         m_lutStrength=1.0f;m_svrStrength=0.7f;
         m_nrIntensity=1.0f;m_nrLocalStructure=1.0f;m_nrSkinStructure=-1.0f;m_nrAutoMask=true;
         m_fxLut=true;m_fxSharpen=true;m_fxTone=true;m_fxFlow=true;m_fxDepth=true;m_fxMask=false;m_bypassFX=false;
@@ -2131,7 +2108,7 @@ private:
     }
 
     // SeedVR2 restoration pre-pass: diffusion-restores the loaded movie at source
-    // resolution (recovered real detail beats injected grain), then the restored
+    // resolution (recovered real detail), then the restored
     // file goes through DLSS/NR. Runs offline through the configured Python; the
     // first run downloads ~9 GB of weights as its own reported phase.
     void StartSeedVR(){
@@ -2708,9 +2685,8 @@ private:
     int m_maskSensitivity=1;  // GenMask match threshold: 0 strict, 1 balanced, 2 loose (MaskSensitivity in the ini)
     bool m_panelLeft=false;   // control panel column on the left (PanelLeft in the ini)
     bool m_loop=true;
-    float m_toneMix=0.0f,m_sharpen=0.0f,m_postSharpen=0.0f,m_grain=0.0f,m_preGrain=0.0f,m_lutStrength=1.0f,m_svrStrength=0.7f,m_nrSmooth=0.0f;int m_motionMode=0;std::wstring m_lutPath;bool m_lutLoaded=false;   // the preview actually applied m_lutPath
-    bool m_grainColor=false,m_preGrainColor=false; // grain palette: false=mono film, true=per-channel color
-    bool m_fxLut=true,m_fxSharpen=true,m_fxPreGrain=true,m_fxTone=true,m_fxGrain=true,m_fxFlow=true,m_fxDepth=true,m_bypassFX=false,m_lanczos4K=false;
+    float m_toneMix=0.0f,m_sharpen=0.0f,m_postSharpen=0.0f,m_lutStrength=1.0f,m_svrStrength=0.7f,m_nrSmooth=0.0f;int m_motionMode=0;std::wstring m_lutPath;bool m_lutLoaded=false;   // the preview actually applied m_lutPath
+    bool m_fxLut=true,m_fxSharpen=true,m_fxTone=true,m_fxFlow=true,m_fxDepth=true,m_bypassFX=false,m_lanczos4K=false;
     int m_nrModelPick=-1;VideoFrame m_lastFrame;
     // Inspection zoom (uv-space center + scale; 1 = off). Right-drag a rect on
     // the video to zoom in, left-drag pans, Ctrl+wheel zooms at the cursor,

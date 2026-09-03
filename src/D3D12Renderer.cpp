@@ -114,8 +114,8 @@ cbuffer Params:register(b0){
     float2 JitterUV;
     float2 Misc;    // convert passes: x = LUT strength, y = LUT size N
     float4 ColorA; // present: brightness, contrast, saturation, gamma | convert: xyz = LUT domain scale, w = pre-sharpen amount
-    float4 ColorB; // present: temperature, tint, grain, seed         | convert: xyz = LUT domain offset
-    float4 Extra;  // convert: x = pre-grain amount, y = grain seed | present: z = post-sharpen amount
+    float4 ColorB; // present: temperature, tint                     | convert: xyz = LUT domain offset
+    float4 Extra;  // present: x = compare mode, y = split position, z = post-sharpen amount
 }
 struct V{float4 p:SV_Position;float2 uv:TEXCOORD0;};
 V VS(uint id:SV_VertexID){float2 uv=float2((id<<1)&2,id&2);V o;o.uv=uv;o.p=float4(uv.x*2-1,1-uv.y*2,0,1);return o;}
@@ -134,16 +134,10 @@ float3 DrawLabel(float3 dst,float2 uv,float tw,float th,float2 posPx,float2 size
     float4 t=OverlayLabel.SampleLevel(S,float2(lerp(uMin,uMax,lp.x),lerp(vMin,vMax,lp.y)),0);
     return lerp(dst,t.rgb,t.a);
 }
-// Grain noise: sine-free integer hashes (Dave Hoskins) keyed on the target pixel
-// position + a per-frame seed. No sin() precision banding, no static lattice, and
-// it re-randomizes every frame so the grain actually crawls like film. hash13 =
-// one monochrome sample; hash33 = three decorrelated channels for colour grain.
-float hash13(float3 p){p=frac(p*0.1031);p+=dot(p,p.zyx+31.32);return frac((p.x+p.y)*p.z);}
-float3 hash33(float3 p){p=frac(p*float3(0.1031,0.1030,0.0973));p+=dot(p,p.yxz+33.33);return frac((p.xxy+p.yxx)*p.zyx);}
 // Optional pre-DLSS unsharp mask (amount in ColorA.w): a small, clamped detail
 // boost on the decoded frame so the neural pass has more micro-contrast to bite
 // into. The overshoot clamp keeps halos in check.
-float3 SampleSharp(float2 uv,float2 ppos){
+float3 SampleSharp(float2 uv){
     float3 c=T.SampleLevel(S,uv,0).rgb;
     if(ColorA.w>0.001){
         float tw,th;T.GetDimensions(tw,th);
@@ -153,22 +147,13 @@ float3 SampleSharp(float2 uv,float2 ppos){
         float3 d=clamp(c-b,-0.12,0.12);
         c=saturate(c+ColorA.w*d);
     }
-    // Pre-DLSS grain: injected BEFORE the neural pass so it reads the noise as
-    // skin/surface micro-texture and enhances it (fights the waxy look at the
-    // source). Temporal accumulation averages some away, so it acts subtler than
-    // post-grain. Extra.x = amount, Extra.y = frame seed, Extra.z != 0 = colour.
-    if(Extra.x>0.001){
-        float3 n=(Extra.z>0.5)?hash33(float3(ppos,Extra.y)):hash13(float3(ppos,Extra.y)).xxx;
-        float lum=dot(c,float3(0.2126,0.7152,0.0722));
-        c=saturate(c+(n-0.5)*Extra.x*0.18*(0.35+0.65*(1.0-abs(2.0*lum-1.0))));
-    }
     return c;
 }
-float4 PSConvert(V i):SV_Target{float3 c=SampleSharp(i.uv+JitterUV,i.p.xy);return float4(SRGBToLinear(c),1);}
+float4 PSConvert(V i):SV_Target{float3 c=SampleSharp(i.uv+JitterUV);return float4(SRGBToLinear(c),1);}
 // Creative LUT applied in gamma space (where .cube grades expect to operate),
 // then linearized for DLSS. Hardware trilinear filtering does the 3D interpolation.
 float4 PSConvertLUT(V i):SV_Target{
-    float3 c=SampleSharp(i.uv+JitterUV,i.p.xy);
+    float3 c=SampleSharp(i.uv+JitterUV);
     float n=max(Misc.y,2.0);
     float3 t=saturate(c*ColorA.xyz+ColorB.xyz);
     float3 g=LUT.SampleLevel(S,t*((n-1.0)/n)+0.5/n,0).rgb;
@@ -193,19 +178,6 @@ float3 ApplyVideoAdjustments(float3 c){
     c=pow(max(c,0.0),1.0/gamma);
     return c;
 }
-// Fine animated luma-weighted grain (ColorB.z = amount, ColorB.w = frame seed):
-// breaks up the waxy/plastic look of over-smooth AI skin by restoring the
-// micro-texture real footage has. Strongest in midtones, gentle in blacks/whites.
-// ColorB.z = amount, ColorB.w = frame seed, Extra.w != 0 = colour (per-channel)
-// grain, else monochrome. ppos is the output pixel position (SV_Position.xy).
-float3 ApplyGrain(float3 srgb,float2 ppos){
-    float amt=ColorB.z;
-    if(amt<=0.001)return srgb;
-    float3 n=(Extra.w>0.5)?hash33(float3(ppos,ColorB.w)):hash13(float3(ppos,ColorB.w)).xxx;
-    float lum=dot(srgb,float3(0.2126,0.7152,0.0722));
-    float wgt=0.35+0.65*(1.0-abs(2.0*lum-1.0));
-    return saturate(srgb+(n-0.5)*amt*0.22*wgt);
-}
 // Post-DLSS unsharp mask (Extra.z) on the neural output: the NR models denoise
 // while redrawing, and the pre-sharpen cannot restore acutance lost INSIDE the
 // pass. Clamped overshoot keeps halos in check, applied in linear space.
@@ -229,7 +201,7 @@ float3 SampleOutSharp(float2 uv){
 float4 PSPresent(V i):SV_Target{
     float2 uv=ZoomUV(i.uv);
     float3 c=SampleOutSharp(uv);c=ApplyVideoAdjustments(c);
-    float3 after=ApplyGrain(LinearToSRGB(c),i.p.xy);
+    float3 after=LinearToSRGB(c);
     int cmp=(int)(Extra.x+0.5);
     if(cmp>0){
         // Aux2 in compare mode is the decoded source: 8-bit sRGB-encoded
@@ -309,7 +281,7 @@ float4 PSPresentTone(V i):SV_Target{
     float3 c=lerp(o,saturate(r+delta),saturate(Misc.x));
     float3 lin=SRGBToLinear(c);
     lin=ApplyVideoAdjustments(lin);
-    return float4(ApplyGrain(LinearToSRGB(lin),i.p.xy),1);
+    return float4(LinearToSRGB(lin),1);
 }
 )" R"(
 // NR Smooth: temporal EMA over the NR CONTRIBUTION (output - input, per
@@ -849,7 +821,7 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
         float cparams[16]={jitterUVX,jitterUVY,m_lutStrength,float(m_lutSize),
                            m_lutDomainScale[0],m_lutDomainScale[1],m_lutDomainScale[2],m_preSharpen,
                            m_lutDomainOffset[0],m_lutDomainOffset[1],m_lutDomainOffset[2],0,
-                           m_preGrain,m_preGrainStatic?331.0f:float(m_framesPresented%997),m_preGrainColor?1.0f:0.0f,0};
+                           0,0,0,0};
         cmd->SetGraphicsRoot32BitConstants(1,16,cparams,0);
     }
     cmd->DrawInstanced(3,1,0,0);Barrier(cmd,m_dlssColor.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,GuideReadState);m_colorInRT=false;
@@ -879,7 +851,7 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
     bool used=false;
     if (DLSSEnabled() && DLSSFeatureCreated()) {
         // Bracket the NR evaluate with the sRGB encode/decode passes; everything
-        // else (tone-preserve, grain, present) still reads linear m_dlssOutput.
+        // else (tone-preserve, present) still reads linear m_dlssOutput.
         Barrier(cmd,m_dlssColor.Get(),GuideReadState,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Barrier(cmd,m_nrColor.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET);
         D3D12_VIEWPORT nvp{0,0,float(m_renderW),float(m_renderH),0,1};D3D12_RECT nsc{0,0,LONG(m_renderW),LONG(m_renderH)};
@@ -949,8 +921,8 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
     const float zs=m_exportMode?1.0f:m_zoomScale;
     const float zx=std::clamp(m_zoomCX-zs*0.5f,0.0f,1.0f-zs);
     const float zy=std::clamp(m_zoomCY-zs*0.5f,0.0f,1.0f-zs);
-    float presentParams[16]={zx,zy,compareOn?(m_fxBypassIndicator?2.0f:1.0f):(toneActive?m_toneMix:0.0f),zs,cs.brightness,cs.contrast,cs.saturation,cs.gamma,cs.temperature,cs.tint,applyColor?m_grain:0.0f,float(m_framesPresented%997),
-                             compareOn?float(m_compareMode):0.0f,m_comparePos,applyColor?m_postSharpen:0.0f,m_grainColor?1.0f:0.0f};
+    float presentParams[16]={zx,zy,compareOn?(m_fxBypassIndicator?2.0f:1.0f):(toneActive?m_toneMix:0.0f),zs,cs.brightness,cs.contrast,cs.saturation,cs.gamma,cs.temperature,cs.tint,0,0,
+                             compareOn?float(m_compareMode):0.0f,m_comparePos,applyColor?m_postSharpen:0.0f,0};
     cmd->SetGraphicsRoot32BitConstants(1,16,presentParams,0);
     if(m_labelAtlas)cmd->SetGraphicsRootDescriptorTable(3,SRVGPU(16)); // t5 overlay labels (PSPresent)
     // DLSS inputs stay shader-readable for NGX. Only the texture selected for the
@@ -1092,8 +1064,8 @@ bool D3D12Renderer::PresentCurrent(){
     const float zs=m_exportMode?1.0f:m_zoomScale;
     const float zx=std::clamp(m_zoomCX-zs*0.5f,0.0f,1.0f-zs);
     const float zy=std::clamp(m_zoomCY-zs*0.5f,0.0f,1.0f-zs);
-    float presentParams[16]={zx,zy,compareOn?(m_fxBypassIndicator?2.0f:1.0f):(toneActive?m_toneMix:0.0f),zs,cs.brightness,cs.contrast,cs.saturation,cs.gamma,cs.temperature,cs.tint,applyColor?m_grain:0.0f,float(m_framesPresented%997),
-                             compareOn?float(m_compareMode):0.0f,m_comparePos,applyColor?m_postSharpen:0.0f,m_grainColor?1.0f:0.0f};
+    float presentParams[16]={zx,zy,compareOn?(m_fxBypassIndicator?2.0f:1.0f):(toneActive?m_toneMix:0.0f),zs,cs.brightness,cs.contrast,cs.saturation,cs.gamma,cs.temperature,cs.tint,0,0,
+                             compareOn?float(m_compareMode):0.0f,m_comparePos,applyColor?m_postSharpen:0.0f,0};
     cmd->SetGraphicsRoot32BitConstants(1,16,presentParams,0);
     if(m_labelAtlas)cmd->SetGraphicsRootDescriptorTable(3,SRVGPU(16)); // t5 overlay labels (PSPresent)
 

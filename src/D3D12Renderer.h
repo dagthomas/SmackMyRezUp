@@ -90,11 +90,6 @@ public:
     // MVec with the opposite sign of our current->previous field (measured:
     // +1 turns real flow into 1.4px background lurches, -1 removes them).
     void SetNRMVScale(float s) { m_nrMVScale = s; }
-    // Pre-grain with a FROZEN seed: static micro-texture the NR pass amplifies
-    // as skin/surface detail without the temporal crawl of animated grain.
-    // Screen-fixed, so only suitable for locked-off shots - on moving content
-    // it reads as texture sticking to the screen.
-    void SetPreGrainStatic(bool on) { m_preGrainStatic = on; }
     // Gate on the FINAL MV field the guide expansion writes (0 = force zero,
     // 1 = pass through). Zero motion mode must zero the field even when an
     // external flow texture bypasses the CPU-side grid override. Live-settable.
@@ -173,16 +168,6 @@ public:
     // NR Smooth: motion-compensated EMA over the NR contribution (output -
     // input). One GPU pass, shared by the live preview and the exporter. 0 = off.
     void SetNRSmooth(float s) { m_nrSmooth = s; }
-
-    // Fine animated film grain on the final image (0 = off). Luma-weighted,
-    // strongest in midtones - the classic fix for waxy/plastic AI skin.
-    void SetGrain(float g) { m_grain = g; }
-    // Grain injected BEFORE DLSS/NR so the neural pass enhances it as texture.
-    void SetPreGrain(float g) { m_preGrain = g; }
-    // Grain color mode: false = monochrome (classic film), true = per-channel
-    // color (sensor-like). Live-settable; applies to final and pre-DLSS grain.
-    void SetGrainColor(bool on) { m_grainColor = on; }
-    void SetPreGrainColor(bool on) { m_preGrainColor = on; }
 
 private:
     static constexpr uint32_t FrameCount = 3;
@@ -299,16 +284,11 @@ private:
     uint32_t m_nrMaskMode = 0;
     bool m_fxBypassIndicator = false;
     float m_nrMVScale = -1.0f;
-    bool m_preGrainStatic = false;
     float m_mvFieldScale = 1.0f;
     float m_preSharpen = 0.0f;
     float m_postSharpen = 0.0f;
     bool m_deepInput = false;
     float m_toneMix = 0.0f;
-    float m_grain = 0.0f;
-    float m_preGrain = 0.0f;
-    bool m_grainColor = false;
-    bool m_preGrainColor = false;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_lowRef;   // downsampled dlssColor (low-frequency estimate)
     Microsoft::WRL::ComPtr<ID3D12Resource> m_lowOut;   // downsampled dlssOutput
     uint32_t m_lowW = 0, m_lowH = 0;
