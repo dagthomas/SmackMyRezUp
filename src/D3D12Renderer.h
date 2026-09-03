@@ -170,6 +170,9 @@ public:
     // (0 = raw NR, 1 = fully preserved). Uses a downsampled low-frequency pair
     // instead of the exporter's exact box blur - a preview-grade approximation.
     void SetToneMix(float mix) { m_toneMix = mix; }
+    // NR Smooth: motion-compensated EMA over the NR contribution (output -
+    // input). One GPU pass, shared by the live preview and the exporter. 0 = off.
+    void SetNRSmooth(float s) { m_nrSmooth = s; }
 
     // Fine animated film grain on the final image (0 = off). Luma-weighted,
     // strongest in midtones - the classic fix for waxy/plastic AI skin.
@@ -208,6 +211,9 @@ private:
                         const void* src, size_t tightRowBytes, uint32_t rows);
     bool WaitForFrameSlot(uint32_t slot);
     void SignalFrameSlot(uint32_t slot);
+    // Records the NR Smooth pass over m_dlssOutput; drops its history (and does
+    // nothing else) when NR did not run this frame or the strength is 0.
+    void RecordNRSmooth(ID3D12GraphicsCommandList* cmd, bool used, bool temporalReset);
     void Barrier(ID3D12GraphicsCommandList* cmd, ID3D12Resource* res,
                  D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after);
     D3D12_CPU_DESCRIPTOR_HANDLE RTV(uint32_t index) const;
@@ -250,6 +256,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoExpandGuidesExt;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoDownPair;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoPresentTone;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoSmooth;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoToSRGB, m_psoFromSRGB;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_decodedTexture;
@@ -306,6 +313,14 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_lowOut;   // downsampled dlssOutput
     uint32_t m_lowW = 0, m_lowH = 0;
     bool m_lowInRT = true;
+    // NR Smooth: the smoothed picture (copied back over m_dlssOutput so every
+    // later pass keeps reading the one texture) and a ping-pong pair holding
+    // last frame's smoothed NR delta in sRGB units.
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_smoothOut;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_smoothDelta[2];
+    float m_nrSmooth = 0.0f;
+    uint32_t m_smoothCur = 0;          // delta texture written this frame
+    bool m_smoothHasHistory = false;   // false = the previous delta is stale
     std::vector<float> m_lutData;      // size^3 RGBA32F texels, red fastest
     uint32_t m_lutSize = 0;
     float m_lutStrength = 1.0f;

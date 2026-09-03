@@ -225,7 +225,8 @@ L"  --lut-strength X   0..1 blend between original and graded (default 1)\n"
 L"  --compare          file mode: export original | processed side by side\n"
 L"  --split            file mode: single frame split down the middle\n"
 L"                     (left half original, right half processed)\n"
-L"  --tone MODE        preserve (default: NR detail on the ORIGINAL tone/colors)\n"
+L"  --tone MODE        preserve (default: NR detail on the ORIGINAL tone/colors,\n"
+L"                     the player's tone-preserve pass)\n"
 L"                     | nr (raw neural output, with its gamma/color shifts)\n"
 L"  --tone-mix X       0..1 blend raw NR -> preserved (default 0.7)\n"
 L"  --sharpen X        0..1 pre-DLSS unsharp mask so the neural pass sees more\n"
@@ -235,7 +236,8 @@ L"                     AI skin; try 0.15-0.35)\n"
 L"  --pre-grain X      0..1 grain injected BEFORE DLSS/NR so the neural pass\n"
 L"                     enhances it as skin texture (try 0.2-0.4)\n"
 L"  --nr-smooth X      0..1 temporal smoothing of the NR contribution (default 0;\n"
-L"                     helps boiling detail on static shots, can trail on motion)\n"
+L"                     the player's NR Smooth pass; helps boiling detail on\n"
+L"                     static shots, can trail on motion)\n"
 L"  --flow-video F     file mode: RAFT flow movie (tools\\make_flow_video.py);\n"
 L"                     replaces the block-matcher motion vectors entirely\n"
 L"  --mask-video F     file mode: segmentation mask movie (tools\\make_mask_video.py):\n"
@@ -472,129 +474,6 @@ void BuildRefRGBA(const uint8_t* bgra, uint32_t sw, uint32_t sh,
     }
 }
 
-// Separable box blur (two passes ~= triangular kernel) on a float plane.
-void BoxBlurPlane(std::vector<float>& img, std::vector<float>& tmp, uint32_t w, uint32_t h, uint32_t r) {
-    if (!r) return;
-    const float inv = 1.0f / float(2*r + 1);
-    for (int pass = 0; pass < 2; ++pass) {
-        // horizontal into tmp
-        for (uint32_t y = 0; y < h; ++y) {
-            const float* src = img.data() + size_t(y)*w;
-            float* out = tmp.data() + size_t(y)*w;
-            float acc = 0.0f;
-            for (int x = -int(r); x <= int(r); ++x) acc += src[std::clamp(x, 0, int(w)-1)];
-            for (uint32_t x = 0; x < w; ++x) {
-                out[x] = acc * inv;
-                const int add = std::min(int(x)+int(r)+1, int(w)-1);
-                const int sub = std::max(int(x)-int(r), 0);
-                acc += src[add] - src[sub];
-            }
-        }
-        // vertical back into img
-        for (uint32_t x = 0; x < w; ++x) {
-            float acc = 0.0f;
-            for (int y = -int(r); y <= int(r); ++y) acc += tmp[size_t(std::clamp(y,0,int(h)-1))*w + x];
-            for (uint32_t y = 0; y < h; ++y) {
-                img[size_t(y)*w + x] = acc * inv;
-                const int add = std::min(int(y)+int(r)+1, int(h)-1);
-                const int sub = std::max(int(y)-int(r), 0);
-                acc += tmp[size_t(add)*w + x] - tmp[size_t(sub)*w + x];
-            }
-        }
-    }
-}
-
-// Temporal EMA over the NR contribution (out - ref, per channel), MOTION
-// COMPENSATED: the previous smoothed delta is warped along the estimated
-// optical flow (current -> previous, in DLSS-input pixels) before blending, so
-// the smoothing follows moving faces instead of trailing them. Smoothing only
-// the DELTA keeps the underlying video crisp while the neural layer settles;
-// a per-pixel outlier reset avoids ghosting on cuts and fast changes.
-struct DeltaSmoother {
-    std::vector<float> prev, next;
-    bool has = false;
-    float strength = 0.0f;
-
-    void Reset() { has = false; }
-
-    void Apply(const uint8_t* refRGBA, uint8_t* outRGBA, uint32_t w, uint32_t h,
-               const float* flowRG, uint32_t gw, uint32_t gh, float flowScaleX, float flowScaleY) {
-        if (strength <= 0.0f) return;
-        const size_t pixels = size_t(w) * h;
-        if (prev.size() != pixels * 3) { prev.assign(pixels * 3, 0.0f); has = false; }
-        next.resize(pixels * 3);
-        const float keep = strength;
-        const bool warp = has && flowRG && gw >= 2 && gh >= 2;
-        for (uint32_t y = 0; y < h; ++y) {
-            for (uint32_t x = 0; x < w; ++x) {
-                const size_t i = size_t(y) * w + x;
-                float px = float(x), py = float(y);
-                if (warp) {
-                    // bilinear-sample the compact flow grid at this pixel
-                    const float gx = std::clamp((x + 0.5f) / w * gw - 0.5f, 0.0f, float(gw - 1));
-                    const float gy = std::clamp((y + 0.5f) / h * gh - 0.5f, 0.0f, float(gh - 1));
-                    const uint32_t gx0 = uint32_t(gx), gy0 = uint32_t(gy);
-                    const uint32_t gx1 = std::min(gx0 + 1, gw - 1), gy1 = std::min(gy0 + 1, gh - 1);
-                    const float tx = gx - gx0, ty = gy - gy0;
-                    auto F = [&](uint32_t yy, uint32_t xx, int c) { return flowRG[(size_t(yy) * gw + xx) * 2 + c]; };
-                    const float mx = (F(gy0,gx0,0)*(1-tx)+F(gy0,gx1,0)*tx)*(1-ty)+(F(gy1,gx0,0)*(1-tx)+F(gy1,gx1,0)*tx)*ty;
-                    const float my = (F(gy0,gx0,1)*(1-tx)+F(gy0,gx1,1)*tx)*(1-ty)+(F(gy1,gx0,1)*(1-tx)+F(gy1,gx1,1)*tx)*ty;
-                    px += mx * flowScaleX;   // flow is current -> previous
-                    py += my * flowScaleY;
-                }
-                const bool inb = has && px >= 0.0f && py >= 0.0f && px <= float(w - 1) && py <= float(h - 1);
-                float wp[3];
-                if (inb) {
-                    const uint32_t x0 = uint32_t(px), y0 = uint32_t(py);
-                    const uint32_t x1 = std::min(x0 + 1, w - 1), y1 = std::min(y0 + 1, h - 1);
-                    const float tx = px - x0, ty = py - y0;
-                    for (int c = 0; c < 3; ++c) {
-                        const float a = prev[(size_t(y0)*w+x0)*3+c]*(1-tx)+prev[(size_t(y0)*w+x1)*3+c]*tx;
-                        const float b = prev[(size_t(y1)*w+x0)*3+c]*(1-tx)+prev[(size_t(y1)*w+x1)*3+c]*tx;
-                        wp[c] = a*(1-ty)+b*ty;
-                    }
-                }
-                for (int c = 0; c < 3; ++c) {
-                    const float d = float(outRGBA[i*4+c]) - float(refRGBA[i*4+c]);
-                    float sm = d;
-                    if (inb) sm = (std::fabs(d - wp[c]) > 48.0f) ? d : wp[c] * keep + d * (1.0f - keep);
-                    next[i*3+c] = sm;
-                    outRGBA[i*4+c] = uint8_t(std::clamp(float(refRGBA[i*4+c]) + sm + 0.5f, 0.0f, 255.0f));
-                }
-            }
-        }
-        prev.swap(next);
-        has = true;
-    }
-};
-
-// Detail transfer: keep the neural pass's high-frequency luma detail but restore
-// the ORIGINAL's tone (low-frequency luma) and colors. Fixes the NR relight's
-// gamma lift on faces and its color drift while keeping the added detail.
-// final = ref + (lowRef - Yref) + (Yout - lowOut), blended by mix toward raw NR.
-void PreserveTone(const uint8_t* refRGBA, uint8_t* outRGBA, uint32_t w, uint32_t h, float mix) {
-    const size_t n = size_t(w) * h;
-    static thread_local std::vector<float> yRef, yOut, tmp;
-    yRef.resize(n); yOut.resize(n); tmp.resize(n);
-    for (size_t i = 0; i < n; ++i) {
-        yRef[i] = 0.2126f*refRGBA[i*4] + 0.7152f*refRGBA[i*4+1] + 0.0722f*refRGBA[i*4+2];
-        yOut[i] = 0.2126f*outRGBA[i*4] + 0.7152f*outRGBA[i*4+1] + 0.0722f*outRGBA[i*4+2];
-    }
-    static thread_local std::vector<float> lowRef, lowOut;
-    lowRef = yRef; lowOut = yOut;
-    const uint32_t r = std::max(6u, std::min(w, h) / 48u);
-    BoxBlurPlane(lowRef, tmp, w, h, r);
-    BoxBlurPlane(lowOut, tmp, w, h, r);
-    for (size_t i = 0; i < n; ++i) {
-        const float delta = (lowRef[i] - yRef[i]) + (yOut[i] - lowOut[i]);
-        for (int c = 0; c < 3; ++c) {
-            const float preserved = float(refRGBA[i*4+c]) + delta;
-            const float blended = float(outRGBA[i*4+c])*(1.0f-mix) + preserved*mix;
-            outRGBA[i*4+c] = uint8_t(std::clamp(blended + 0.5f, 0.0f, 255.0f));
-        }
-    }
-}
-
 // Glyph5x7 / StampLabel now live in LabelStamp.h (shared with the player).
 
 // Separable Lanczos3 upscale of a BGRA8 image (--scaler lanczos): a crisp
@@ -721,6 +600,7 @@ struct Pipeline {
     HWND hwnd = nullptr;
     D3D12Renderer renderer;
     FramePipeline frames{renderer};
+    uint64_t frameIndex = 0;   // index of the frame being rendered, for diagnostics
 
     ~Pipeline() { if (hwnd) DestroyWindow(hwnd); }
 
@@ -788,6 +668,10 @@ struct Pipeline {
         renderer.EnableExport(true);
         renderer.SetPreSharpen(o.sharpen);
         renderer.SetPostSharpen(o.postSharpen);
+        renderer.SetNRSmooth(o.nrSmooth);
+        // Tone preserve is the renderer's pass (the one the preview shows): it
+        // recombines before the colour adjustments, so an export is the preview.
+        renderer.SetToneMix(o.tonePreserve ? o.toneMix : 0.0f);
         renderer.SetGrain(o.grain);
         renderer.SetPreGrain(o.preGrain);
         renderer.SetPreGrainStatic(o.preGrainStatic);
@@ -820,7 +704,8 @@ struct Pipeline {
         // Hosts read the exporter's stderr; a cut is worth reporting there and
         // not only in the log file.
         if (frames.CutCount() != cutsBefore)
-            fprintf(stderr, SMRU_LOG_TAG " scene cut -> DLSS history reset\n");
+            fprintf(stderr, SMRU_LOG_TAG " scene cut at frame %llu -> DLSS history reset\n",
+                    (unsigned long long)frameIndex);
         PumpMessages();
         return ok;
     }
@@ -860,6 +745,7 @@ int RunRaw(Options o) {
             return 4;
         }
         const uint8_t* dptr = o.depthIn ? depth.data() : nullptr;
+        p.frameIndex = n;
         if (n == 0) {
             // Warm-up: duplicated first-frame renders create the feature (first-frame
             // flush) and converge fresh temporal history; outputs are discarded so
@@ -879,24 +765,6 @@ int RunRaw(Options o) {
         if (px.empty()) return 6;
         const uint32_t ow = p.renderer.OutputW(), oh = p.renderer.OutputH();
         const uint8_t* payload = px.data();
-        static std::vector<uint8_t> ref, processed;
-        static DeltaSmoother smoother;
-        smoother.strength = o.nrSmooth;
-        if (p.frames.LastReset()) smoother.Reset();
-        const bool wantTone = o.tonePreserve && o.toneMix > 0.0f;
-        if (wantTone || o.nrSmooth > 0.0f) {
-            ref.resize(size_t(ow) * oh * 4);
-            // In 16-bit mode the BGRA8 shadow built during Render is the tone
-            // reference (low-frequency use only - the precision loss is moot).
-            BuildRefRGBA(o.bits == 16 ? p.frames.Shadow8().data() : frame.data(), o.inW, o.inH, ref.data(), ow, oh);
-            processed.assign(px.begin(), px.end());
-            smoother.Apply(ref.data(), processed.data(), ow, oh,
-                           p.frames.LastFlow(), p.frames.FlowGridW(), p.frames.FlowGridH(),
-                           float(ow) / std::max(1u, p.renderer.DLSSInputW()),
-                           float(oh) / std::max(1u, p.renderer.DLSSInputH()));
-            if (wantTone) PreserveTone(ref.data(), processed.data(), ow, oh, o.toneMix);
-            payload = processed.data();
-        }
         if (!WriteExact(hout, payload, size_t(ow) * oh * 4)) return 6;
         ++n;
         if (n % 60 == 0) fprintf(stderr, SMRU_LOG_TAG " frame %llu\n", (unsigned long long)n);
@@ -1039,30 +907,61 @@ int RunFile(Options o) {
     uint64_t n = 0;
     int rc = 0;
     VideoFrame f, df, ff, mf;
-    std::vector<uint8_t> stitched, ref, processed;
+    std::vector<uint8_t> stitched, ref;
     std::vector<uint8_t> depthPlane;
-    bool haveFlowFrame = false;
-    bool haveMaskFrame = false;
-    DeltaSmoother smoother;
+    // Sidecar movies can be shorter than the main one, and VideoDecoder::ReadNext
+    // resizes and may PARTIALLY overwrite its target before reporting the end of
+    // the stream - so the decoder's own frame is not a safe "last good plane".
+    // Each sidecar keeps its complete frames here instead (swapped in, never
+    // copied) and stops being read once it runs dry.
+    std::vector<uint8_t> flowPlane, maskPlane;
+    bool flowEnded = false, maskEnded = false, depthEnded = false;
     if (o.compare || o.split) stitched.assign(size_t(encW) * outH * 4, 0);
     while (decoder.ReadNext(f)) {
         const uint8_t* dptr = nullptr;
         size_t dbytes = 0;
         const uint8_t* fptr = nullptr;
         size_t fbytes = 0;
-        if (haveFlowVideo) {
-            if (flowDec.ReadNext(ff) && ff.bgra.size() >= size_t(W) * H * 4) haveFlowFrame = true;
-            if (haveFlowFrame) { fptr = ff.bgra.data(); fbytes = ff.bgra.size(); }
+        if (haveFlowVideo && !flowEnded) {
+            if (flowDec.ReadNext(ff) && ff.bgra.size() >= size_t(W) * H * 4) {
+                flowPlane.swap(ff.bgra);
+                fptr = flowPlane.data(); fbytes = flowPlane.size();
+            } else {
+                // Unlike depth and the mask, a motion field must not be frozen:
+                // holding the last flow frame over moving video points the neural
+                // pass at correspondences that no longer exist, which smears far
+                // worse than having no field at all. Hand the rest of the export
+                // back to the block matcher.
+                flowEnded = true;
+                p.renderer.SetExternalFlowEnabled(false);
+                fprintf(stderr, SMRU_LOG_TAG " flow video ended at frame %llu; the block matcher"
+                        " estimates the motion field for the rest of the export\n",
+                        (unsigned long long)n);
+            }
         }
         const uint8_t* mptr = nullptr;
         size_t mbytes = 0;
         if (haveMaskVideo) {
-            if (maskDec.ReadNext(mf) && mf.bgra.size() >= size_t(W) * H * 4) haveMaskFrame = true;
-            if (haveMaskFrame) { mptr = mf.bgra.data(); mbytes = mf.bgra.size(); }
+            if (!maskEnded) {
+                if (maskDec.ReadNext(mf) && mf.bgra.size() >= size_t(W) * H * 4) {
+                    maskPlane.swap(mf.bgra);
+                } else {
+                    maskEnded = true;
+                    fprintf(stderr, SMRU_LOG_TAG " mask video ended at frame %llu; holding the last"
+                            " mask plane for the rest of the export\n", (unsigned long long)n);
+                }
+            }
+            if (!maskPlane.empty()) { mptr = maskPlane.data(); mbytes = maskPlane.size(); }
         }
         if (haveDepthVideo) {
-            if (depthDec.ReadNext(df) && df.bgra.size() >= size_t(W) * H * 4) {
-                DepthGrayToR16(df.bgra.data(), W, H, depthPlane);
+            if (!depthEnded) {
+                if (depthDec.ReadNext(df) && df.bgra.size() >= size_t(W) * H * 4) {
+                    DepthGrayToR16(df.bgra.data(), W, H, depthPlane);
+                } else {
+                    depthEnded = true;
+                    fprintf(stderr, SMRU_LOG_TAG " depth video ended at frame %llu; holding the last"
+                            " depth plane for the rest of the export\n", (unsigned long long)n);
+                }
             }
             if (!depthPlane.empty()) { dptr = depthPlane.data(); dbytes = depthPlane.size(); }
         }
@@ -1072,6 +971,7 @@ int RunFile(Options o) {
             LanczosResize(f.bgra.data(), W, H, lz.data(), procW, procH);
             fb = lz.data(); fbBytes = lz.size();
         }
+        p.frameIndex = n;
         if (n == 0) {
             for (int wpass = 0; wpass < o.warmup; ++wpass) {
                 if (!p.Render(fb, fbBytes, true, dptr, dbytes, fptr, fbytes, mptr, mbytes)) { rc = 5; break; }
@@ -1085,26 +985,14 @@ int RunFile(Options o) {
         }
         const auto& px = p.renderer.ExportRGBA();
         if (px.empty()) { fprintf(stderr, SMRU_LOG_TAG " empty readback at frame %llu\n", (unsigned long long)n); rc = 6; break; }
-        const bool wantTone = o.tonePreserve && o.toneMix > 0.0f;
-        smoother.strength = o.nrSmooth;
-        if (f.discontinuity || p.frames.LastReset()) smoother.Reset();
-        if (wantTone || o.compare || o.split || o.nrSmooth > 0.0f) {
+        if (o.compare || o.split) {
             ref.resize(size_t(outW) * outH * 4);
             // With the lanczos scaler the upscaled frame IS the true input, so it
-            // is also the honest compare baseline and tone reference.
+            // is also the honest compare baseline.
             BuildRefRGBA(lanczos ? fb : f.bgra.data(), lanczos ? procW : W, lanczos ? procH : H,
                          ref.data(), outW, outH);
         }
         const uint8_t* right = px.data();
-        if (wantTone || o.nrSmooth > 0.0f) {
-            processed.assign(px.begin(), px.end());
-            smoother.Apply(ref.data(), processed.data(), outW, outH,
-                           p.frames.LastFlow(), p.frames.FlowGridW(), p.frames.FlowGridH(),
-                           float(outW) / std::max(1u, p.renderer.DLSSInputW()),
-                           float(outH) / std::max(1u, p.renderer.DLSSInputH()));
-            if (wantTone) PreserveTone(ref.data(), processed.data(), outW, outH, o.toneMix);
-            right = processed.data();
-        }
         const uint8_t* payload = right;
         size_t payloadBytes = size_t(outW) * outH * 4;
         if (o.compare) {
@@ -1206,8 +1094,7 @@ int RunServe(Options base) {
     struct Sig { uint32_t w = 0, h = 0, ow = 0, oh = 0; int bits = 8; std::wstring lut; } cur;
     bool fresh = true;
     bool warnedQuality = false;
-    DeltaSmoother smoother;
-    std::vector<uint8_t> frame, ref, processed;
+    std::vector<uint8_t> frame;
     uint64_t total = 0, batches = 0;
 
     std::string line;
@@ -1278,7 +1165,6 @@ int RunServe(Options base) {
             if (!p->Init(o, w, h, o.fps)) { sendLine("ERR pipeline init failed"); return 5; }
             cur = { w, h, ow, oh, o.bits, o.lutPath };
             fresh = true;
-            smoother.Reset();
             if (batches) fprintf(stderr, SMRU_LOG_TAG " serve: pipeline rebuilt (%ux%u -> %ux%u, bits=%d)\n",
                                  w, h, p->renderer.OutputW(), p->renderer.OutputH(), o.bits);
         } else {
@@ -1302,8 +1188,8 @@ int RunServe(Options base) {
 
         const size_t frameBytes = size_t(w) * h * (o.bits == 16 ? 8u : 4u);
         frame.resize(frameBytes);
-        smoother.strength = o.nrSmooth;
-        const bool wantTone = o.tonePreserve && o.toneMix > 0.0f;
+        p->renderer.SetNRSmooth(o.nrSmooth);
+        p->renderer.SetToneMix(o.tonePreserve ? o.toneMix : 0.0f);
         for (uint64_t i = 0; i < frames; ++i) {
             bool eof = false;
             if (!ReadExact(hin, frame.data(), frameBytes, eof)) {
@@ -1323,18 +1209,6 @@ int RunServe(Options base) {
             const auto& px = p->renderer.ExportRGBA();
             if (px.empty()) return 6;
             const uint8_t* payload = px.data();
-            if (p->frames.LastReset()) smoother.Reset();
-            if (wantTone || o.nrSmooth > 0.0f) {
-                ref.resize(size_t(outWr) * outHr * 4);
-                BuildRefRGBA(o.bits == 16 ? p->frames.Shadow8().data() : frame.data(), w, h, ref.data(), outWr, outHr);
-                processed.assign(px.begin(), px.end());
-                smoother.Apply(ref.data(), processed.data(), outWr, outHr,
-                               p->frames.LastFlow(), p->frames.FlowGridW(), p->frames.FlowGridH(),
-                               float(outWr) / std::max(1u, p->renderer.DLSSInputW()),
-                               float(outHr) / std::max(1u, p->renderer.DLSSInputH()));
-                if (wantTone) PreserveTone(ref.data(), processed.data(), outWr, outHr, o.toneMix);
-                payload = processed.data();
-            }
             if (!WriteExact(hout, payload, size_t(outWr) * outHr * 4)) return 6;
             ++total;
             if (total % 60 == 0) fprintf(stderr, SMRU_LOG_TAG " serve: frame %llu\n", (unsigned long long)total);

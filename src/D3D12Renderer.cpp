@@ -90,10 +90,10 @@ bool D3D12Renderer::CreateDeviceAndSwapchain(HWND hwnd) {
 }
 
 bool D3D12Renderer::CreateHeapsAndBackbuffers(){
-    D3D12_DESCRIPTOR_HEAP_DESC rh{};rh.Type=D3D12_DESCRIPTOR_HEAP_TYPE_RTV;rh.NumDescriptors=FrameCount+8; // +7 = zero MV texture
+    D3D12_DESCRIPTOR_HEAP_DESC rh{};rh.Type=D3D12_DESCRIPTOR_HEAP_TYPE_RTV;rh.NumDescriptors=FrameCount+11; // +7 = zero MV texture, +8..+10 = NR Smooth output + delta pair
     if(!HR(m_device->CreateDescriptorHeap(&rh,IID_PPV_ARGS(&m_rtvHeap)),"Create RTV heap"))return false;m_rtvInc=m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     for(uint32_t i=0;i<FrameCount;++i){if(!HR(m_swapchain->GetBuffer(i,IID_PPV_ARGS(&m_backbuffers[i])),"Get backbuffer"))return false;m_device->CreateRenderTargetView(m_backbuffers[i].Get(),nullptr,RTV(i));}
-    D3D12_DESCRIPTOR_HEAP_DESC sh{};sh.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;sh.NumDescriptors=18;sh.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // slot 16 = overlay label atlas, 17 = decoded source alias for the A/B "pure original" side
+    D3D12_DESCRIPTOR_HEAP_DESC sh{};sh.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;sh.NumDescriptors=26;sh.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // slot 16 = overlay label atlas, 17 = decoded source alias for the A/B "pure original" side, 18..25 = the two NR Smooth t1..t4 tables
     if(!HR(m_device->CreateDescriptorHeap(&sh,IID_PPV_ARGS(&m_srvHeap)),"Create SRV heap"))return false;
     m_srvInc=m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     D3D12_DESCRIPTOR_HEAP_DESC dh{};dh.Type=D3D12_DESCRIPTOR_HEAP_TYPE_DSV;dh.NumDescriptors=1;
@@ -295,7 +295,7 @@ DownOut PSDownPair(V i){
                   +Aux0.SampleLevel(S,i.uv+float2(pb.x,-pb.y),0).rgb+Aux0.SampleLevel(S,i.uv+float2(-pb.x,pb.y),0).rgb);
     o.a=float4(a,1);o.b=float4(b,1);return o;
 }
-// Live tone-preserve (exporter parity, preview-grade): keep the NR luma detail,
+// Tone-preserve (one pass for the live preview AND the exporter): keep the NR luma detail,
 // restore the original tone/colors by Misc.x. t0=NR output, t2=low(ref),
 // t3=low(out), t4=full-res original. Math in gamma space like the exporter.
 float4 PSPresentTone(V i):SV_Target{
@@ -310,6 +310,38 @@ float4 PSPresentTone(V i):SV_Target{
     float3 lin=SRGBToLinear(c);
     lin=ApplyVideoAdjustments(lin);
     return float4(ApplyGrain(LinearToSRGB(lin),i.p.xy),1);
+}
+)" R"(
+// NR Smooth: temporal EMA over the NR CONTRIBUTION (output - input, per
+// channel, in sRGB units - the tuning of the exporter's original CPU pass),
+// MOTION COMPENSATED: last frame's smoothed delta is fetched where this pixel
+// WAS (t4 = MVs, current -> previous, DLSS-input pixels; ColorA.zw scale them
+// to output pixels) and blended in by ColorA.x. Smoothing only the delta keeps
+// the underlying video crisp while the neural layer settles; a per-pixel
+// outlier reset (ColorA.y) drops the history on cuts and fast changes.
+// t0 = NR output (linear), t2 = NR input (linear), t3 = previous delta,
+// Misc.y = 1 while that previous delta is valid.
+// RT0 = smoothed picture (linear), RT1 = this frame's smoothed delta.
+struct SmoothOut{float4 c:SV_Target0;float4 d:SV_Target1;};
+SmoothOut PSSmooth(V i){
+    float3 o=LinearToSRGB(T.SampleLevel(S,i.uv,0).rgb);
+    float3 r=LinearToSRGB(Aux0.SampleLevel(S,i.uv,0).rgb);
+    float3 d=o-r;
+    float3 sm=d;
+    if(Misc.y>0.5){
+        float tw,th;T.GetDimensions(tw,th);
+        float2 mv=Aux2.SampleLevel(S,i.uv,0).rg*ColorA.zw;
+        float2 puv=i.uv+mv/float2(max(tw,1.0),max(th,1.0));
+        if(all(puv>=0.0)&&all(puv<=1.0)){
+            float3 wp=Aux1.SampleLevel(S,puv,0).rgb;
+            float3 ema=wp*ColorA.x+d*(1.0-ColorA.x);
+            sm=(abs(d-wp)>ColorA.y)?d:ema;
+        }
+    }
+    SmoothOut res;
+    res.c=float4(SRGBToLinear(saturate(r+sm)),1);
+    res.d=float4(sm,1);
+    return res;
 }
 float3 hsv2rgb(float3 c){float4 K=float4(1,2.0/3.0,1.0/3.0,3);float3 p=abs(frac(c.xxx+K.xyz)*6-K.www);return c.z*lerp(K.xxx,saturate(p-K.xxx),c.y);}
 // Video motion is typically sub-pixel to a few pixels per frame - far below
@@ -351,8 +383,8 @@ float4 PSDepth(V i):SV_Target{float d=saturate(T.SampleLevel(S,ZoomUV(i.uv),0).r
 )";
     UINT flags=D3DCOMPILE_OPTIMIZATION_LEVEL3;ComPtr<ID3DBlob>vs,convert,convertLut,present,motion,depth,depthWrite,depthWriteExt,expand,err;
     auto C=[&](const char*entry,const char*target,ComPtr<ID3DBlob>&out)->bool{err.Reset();HRESULT hr=D3DCompile(hlsl,strlen(hlsl),nullptr,nullptr,nullptr,entry,target,flags,0,&out,&err);if(FAILED(hr)){if(err)LOG((char*)err->GetBufferPointer());return false;}return true;};
-    ComPtr<ID3DBlob>downPair,presentTone,expandExt,encodeSrgb,decodeSrgb;
-    if(!C("VS","vs_5_1",vs)||!C("PSConvert","ps_5_1",convert)||!C("PSConvertLUT","ps_5_1",convertLut)||!C("PSPresent","ps_5_1",present)||!C("PSPresentTone","ps_5_1",presentTone)||!C("PSDownPair","ps_5_1",downPair)||!C("PSMotion","ps_5_1",motion)||!C("PSDepth","ps_5_1",depth)||!C("PSWriteDepth","ps_5_1",depthWrite)||!C("PSWriteDepthExt","ps_5_1",depthWriteExt)||!C("PSExpandGuides","ps_5_1",expand)||!C("PSExpandGuidesExt","ps_5_1",expandExt)||!C("PSEncodeSRGB","ps_5_1",encodeSrgb)||!C("PSDecodeSRGB","ps_5_1",decodeSrgb))return false;
+    ComPtr<ID3DBlob>downPair,presentTone,expandExt,encodeSrgb,decodeSrgb,smooth;
+    if(!C("VS","vs_5_1",vs)||!C("PSConvert","ps_5_1",convert)||!C("PSConvertLUT","ps_5_1",convertLut)||!C("PSPresent","ps_5_1",present)||!C("PSPresentTone","ps_5_1",presentTone)||!C("PSDownPair","ps_5_1",downPair)||!C("PSSmooth","ps_5_1",smooth)||!C("PSMotion","ps_5_1",motion)||!C("PSDepth","ps_5_1",depth)||!C("PSWriteDepth","ps_5_1",depthWrite)||!C("PSWriteDepthExt","ps_5_1",depthWriteExt)||!C("PSExpandGuides","ps_5_1",expand)||!C("PSExpandGuidesExt","ps_5_1",expandExt)||!C("PSEncodeSRGB","ps_5_1",encodeSrgb)||!C("PSDecodeSRGB","ps_5_1",decodeSrgb))return false;
     D3D12_DESCRIPTOR_RANGE range{};range.RangeType=D3D12_DESCRIPTOR_RANGE_TYPE_SRV;range.NumDescriptors=1;range.BaseShaderRegister=0;
     D3D12_DESCRIPTOR_RANGE lutRange{};lutRange.RangeType=D3D12_DESCRIPTOR_RANGE_TYPE_SRV;lutRange.NumDescriptors=4;lutRange.BaseShaderRegister=1;
     D3D12_DESCRIPTOR_RANGE ovRange{};ovRange.RangeType=D3D12_DESCRIPTOR_RANGE_TYPE_SRV;ovRange.NumDescriptors=1;ovRange.BaseShaderRegister=5; // t5 = overlay label atlas
@@ -392,6 +424,9 @@ float4 PSDepth(V i):SV_Target{float d=saturate(T.SampleLevel(S,ZoomUV(i.uv),0).r
     if(!HR(m_device->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&m_psoExpandGuidesExt)),"Create external-flow guide expansion PSO"))return false;
     p.PS={downPair->GetBufferPointer(),downPair->GetBufferSize()};p.RTVFormats[0]=DXGI_FORMAT_R16G16B16A16_FLOAT;p.RTVFormats[1]=DXGI_FORMAT_R16G16B16A16_FLOAT;
     if(!HR(m_device->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&m_psoDownPair)),"Create low-frequency pair PSO"))return false;
+    // NR Smooth shares the pair layout: two FP16 targets (smoothed picture, delta).
+    p.PS={smooth->GetBufferPointer(),smooth->GetBufferSize()};
+    if(!HR(m_device->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&m_psoSmooth)),"Create NR Smooth PSO"))return false;
     p.RTVFormats[0]=DXGI_FORMAT_R16G16_FLOAT;p.RTVFormats[1]=DXGI_FORMAT_R8_UNORM;
     p.PS={depthWrite->GetBufferPointer(),depthWrite->GetBufferSize()};
     p.NumRenderTargets=0;p.RTVFormats[0]=DXGI_FORMAT_UNKNOWN;p.RTVFormats[1]=DXGI_FORMAT_UNKNOWN;p.RTVFormats[2]=DXGI_FORMAT_UNKNOWN;p.DSVFormat=DXGI_FORMAT_D32_FLOAT;
@@ -538,6 +573,26 @@ bool D3D12Renderer::CreateVideoResources(){
     m_device->CreateShaderResourceView(m_dlssColor.Get(),&srv,SRVCPU(12));
     m_device->CreateShaderResourceView(m_dlssColor.Get(),&srv,SRVCPU(13));
     m_device->CreateShaderResourceView(m_dlssColor.Get(),&srv,SRVCPU(14));
+    // NR Smooth: the smoothed picture (copied back over m_dlssOutput so every
+    // later pass keeps reading the one texture) and a ping-pong pair carrying
+    // last frame's smoothed NR delta. One t1..t4 table per "previous" delta:
+    // t2 = NR input, t3 = previous delta, t4 = motion vectors (t1 kept valid).
+    auto smoothDesc=Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT,m_outputW,m_outputH,D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    if(!HR(m_device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&smoothDesc,D3D12_RESOURCE_STATE_RENDER_TARGET,nullptr,IID_PPV_ARGS(&m_smoothOut)),"Create NR Smooth output"))return false;
+    m_smoothOut->SetName(L"NRSmooth_Output_Linear_FP16");
+    m_device->CreateRenderTargetView(m_smoothOut.Get(),nullptr,RTV(FrameCount+8));
+    for(uint32_t i=0;i<2;++i){
+        if(!HR(m_device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&smoothDesc,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,nullptr,IID_PPV_ARGS(&m_smoothDelta[i])),"Create NR Smooth delta"))return false;
+        m_smoothDelta[i]->SetName(i?L"NRSmooth_Delta1_FP16":L"NRSmooth_Delta0_FP16");
+        m_device->CreateRenderTargetView(m_smoothDelta[i].Get(),nullptr,RTV(FrameCount+9+i));
+        const uint32_t base=18+i*4;
+        m_device->CreateShaderResourceView(m_dlssColor.Get(),&srv,SRVCPU(base));
+        m_device->CreateShaderResourceView(m_dlssColor.Get(),&srv,SRVCPU(base+1));
+        m_device->CreateShaderResourceView(m_smoothDelta[i].Get(),&srv,SRVCPU(base+2));
+        D3D12_SHADER_RESOURCE_VIEW_DESC msrv=srv;msrv.Format=DXGI_FORMAT_R16G16_FLOAT;
+        m_device->CreateShaderResourceView(m_motion.Get(),&msrv,SRVCPU(base+3));
+    }
+    m_smoothCur=0;m_smoothHasHistory=false;
     if(m_useExtFlow){
         auto flt=Tex2D(DXGI_FORMAT_B8G8R8A8_UNORM,m_sourceW,m_sourceH,D3D12_RESOURCE_FLAG_NONE);
         if(!HR(m_device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&flt,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&m_extFlowTex)),"Create external flow texture"))return false;
@@ -862,6 +917,7 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
     }
 
     m_lastDLSSUsed=used;
+    RecordNRSmooth(cmd,used,temporalReset);
     // A/B compare separator: shows the NR input (before) against the full pipeline
     // (after) split by a draggable line. Takes over the Final present, so tone
     // preserve steps aside while it is active. Never in export.
@@ -970,6 +1026,45 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
         }
     }
     return true;
+}
+
+// NR Smooth (PSSmooth): runs once the NR output is linear in m_dlssOutput,
+// writes the smoothed picture plus this frame's delta, then copies the picture
+// back over m_dlssOutput so tone-preserve, the export readback and the present
+// pass all keep reading the one texture. History lives in the delta pair and is
+// dropped on a temporal reset, when the pass is off, or when NR did not run.
+void D3D12Renderer::RecordNRSmooth(ID3D12GraphicsCommandList*cmd,bool used,bool temporalReset){
+    if(!used||!m_smoothOut||!m_psoSmooth||m_nrSmooth<=0.001f){m_smoothHasHistory=false;return;}
+    const bool history=m_smoothHasHistory&&!temporalReset;
+    const uint32_t cur=m_smoothCur,prev=cur^1u;
+    Barrier(cmd,m_dlssColor.Get(),GuideReadState,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    Barrier(cmd,m_motion.Get(),GuideReadState,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    Barrier(cmd,m_smoothDelta[cur].Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET);
+    D3D12_VIEWPORT vp{0,0,float(m_outputW),float(m_outputH),0,1};D3D12_RECT sc{0,0,LONG(m_outputW),LONG(m_outputH)};
+    cmd->RSSetViewports(1,&vp);cmd->RSSetScissorRects(1,&sc);
+    D3D12_CPU_DESCRIPTOR_HANDLE rts[2]={RTV(FrameCount+8),RTV(FrameCount+9+cur)};
+    cmd->OMSetRenderTargets(2,rts,FALSE,nullptr);
+    cmd->SetGraphicsRootSignature(m_rootSig.Get());cmd->SetPipelineState(m_psoSmooth.Get());
+    cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    // Misc.y = history valid; ColorA = keep, outlier threshold (48/255, the
+    // tuning of the original CPU pass), MV scale DLSS-input -> output pixels.
+    const float params[16]={0,0, 0,history?1.0f:0.0f,
+                            m_nrSmooth,48.0f/255.0f,float(m_outputW)/float(std::max(1u,m_renderW)),float(m_outputH)/float(std::max(1u,m_renderH)),
+                            0,0,0,0, 0,0,0,0};
+    cmd->SetGraphicsRoot32BitConstants(1,16,params,0);
+    cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(1));           // t0 = NR output
+    cmd->SetGraphicsRootDescriptorTable(2,SRVGPU(18+prev*4));   // t2..t4: input, previous delta, MVs
+    cmd->DrawInstanced(3,1,0,0);
+    Barrier(cmd,m_smoothDelta[cur].Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    Barrier(cmd,m_motion.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,GuideReadState);
+    Barrier(cmd,m_dlssColor.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,GuideReadState);
+    Barrier(cmd,m_smoothOut.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Barrier(cmd,m_dlssOutput.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_DEST);
+    cmd->CopyResource(m_dlssOutput.Get(),m_smoothOut.Get());
+    Barrier(cmd,m_dlssOutput.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    Barrier(cmd,m_smoothOut.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET);
+    m_smoothCur=prev;
+    m_smoothHasHistory=true;
 }
 
 bool D3D12Renderer::PresentCurrent(){

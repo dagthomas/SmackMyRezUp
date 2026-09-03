@@ -586,6 +586,7 @@ private:
     float FxTone()const{return (m_bypassFX||!m_fxTone)?0.0f:m_toneMix;}
     float FxSharpen()const{return (m_bypassFX||!m_fxSharpen)?0.0f:m_sharpen;}
     float FxPostSharpen()const{return m_bypassFX?0.0f:m_postSharpen;}
+    float FxNrSmooth()const{return m_bypassFX?0.0f:m_nrSmooth;}
     float FxGrain()const{return (m_bypassFX||!m_fxGrain)?0.0f:m_grain;}
     float FxPreGrain()const{return (m_bypassFX||!m_fxPreGrain)?0.0f:m_preGrain;}
     float FxLutStrength()const{return (m_bypassFX||!m_fxLut)?0.0f:m_lutStrength;}
@@ -599,6 +600,7 @@ private:
             m_renderer->SetToneMix(FxTone());
             m_renderer->SetPreSharpen(FxSharpen());
             m_renderer->SetPostSharpen(FxPostSharpen());
+            m_renderer->SetNRSmooth(FxNrSmooth());
             m_renderer->SetGrain(FxGrain());
             m_renderer->SetPreGrain(FxPreGrain());
             m_renderer->SetGrainColor(m_grainColor);
@@ -728,9 +730,9 @@ private:
         CreateAdjustmentRow(h,IDC_ADJ_TONEMIX,L"NR Tone Mix",row++);
         CreateAdjustmentRow(h,IDC_ADJ_SHARPEN,L"Pre-Sharpen",row++);
         CreateAdjustmentRow(h,IDC_ADJ_POSTSHARPEN,L"Post-Sharpen (after NR)",row++);
-        // NR Smooth: export-time motion-compensated EMA on the NR delta
-        // (--nr-smooth). Calms NR boiling/jiggle; not previewable live.
-        CreateAdjustmentRow(h,IDC_ADJ_NRSMOOTH,L"NR Smooth (export)",row++);
+        // NR Smooth: motion-compensated EMA on the NR delta (--nr-smooth), the
+        // same GPU pass live and in the exporter. Calms NR boiling/jiggle.
+        CreateAdjustmentRow(h,IDC_ADJ_NRSMOOTH,L"NR Smooth",row++);
         // Direct DLSS-NR live knobs (read per evaluate - fully live).
         CreateAdjustmentRow(h,IDC_ADJ_NRINTENSITY,L"NR Intensity",row++);
         CreateAdjustmentRow(h,IDC_ADJ_NRLOCAL,L"NR Structure",row++);
@@ -1239,7 +1241,7 @@ private:
         case 2:m_sharpen=v;if(v>0.001f)m_fxSharpen=true;break;
         case 3:m_postSharpen=v;break;
         case 4:m_toneMix=v;if(v>0.001f)m_fxTone=true;break;
-        case 5:m_nrSmooth=v;break; // export-time NR-delta smoother (no live preview)
+        case 5:m_nrSmooth=v;break;
         case 6:m_lutStrength=v;if(v>0.001f)m_fxLut=true;break;
         case 7:m_svrStrength=v;break; // applies to the next SeedVR job
         }
@@ -1802,7 +1804,7 @@ private:
         // Grain and pre-grain are deliberately not forwarded: animated noise
         // before or after the NR pass measures as pure temporal crawl, and the
         // exporter defaults them to 0/off.
-        if(m_nrSmooth>0.001f)cmd<<L" --nr-smooth "<<std::fixed<<std::setprecision(2)<<m_nrSmooth;
+        if(FxNrSmooth()>0.001f)cmd<<L" --nr-smooth "<<std::fixed<<std::setprecision(2)<<FxNrSmooth();
         cmd<<L" --mv "<<(m_motionMode==0?L"zero":(m_motionMode==1?L"global":L"estimated"));
         cmd<<L" --codec "<<(m_exportCodec==2?L"av1":m_exportCodec==1?L"hevc":L"x264");
         // Direct-engine NR knobs: exports mirror exactly what the preview shows.

@@ -171,7 +171,7 @@
       <tr><td class="k">Sharp</td><td class="num">0 – 1</td><td>Pre-sharpen amount (before the neural pass).</td></tr>
       <tr><td class="k">Post</td><td class="num">0 – 1</td><td>Post-sharpen on the neural output. Judge at 1:1 zoom.</td></tr>
       <tr><td class="k">Tone</td><td class="num">0 – 1</td><td>Tone-preserve mix: 0 raw neural output, 1 original tone fully restored.</td></tr>
-      <tr><td class="k">Smooth</td><td class="num">0 – 1</td><td>Motion-compensated temporal smoothing of the neural delta. <strong>Export only</strong>, no live preview.</td></tr>
+      <tr><td class="k">Smooth</td><td class="num">0 – 1</td><td>Motion-compensated temporal smoothing of the neural delta; the same GPU pass live and in exports.</td></tr>
       <tr><td class="k">LUT</td><td class="num">0 – 1</td><td>LUT strength.</td></tr>
       <tr><td class="k">SVR</td><td class="num">0 – 1</td><td>SeedVR restoration strength for the next SeedVR job.</td></tr>
     </table></div>
@@ -312,7 +312,7 @@ B = 128</pre>
     <dt>My LUT disappeared</dt><dd>The path in the INI no longer exists. The player looks for the same file name in <code>luts\</code> and repairs the setting; otherwise load it again.</dd>
     <dt>DepthMap does nothing</dt><dd>Correct — the current runtime ignores depth. The Depth view still shows what it is being handed.</dd>
     <dt>MaskNR looks different even with a blank mask</dt><dd>Binding the ControlMask changes the output by itself. Always A/B against MaskNR off.</dd>
-    <dt>Boiling detail on static shots</dt><dd>Lower Struct, raise Smooth for exports, or set Motion to Zero.</dd>
+    <dt>Boiling detail on static shots</dt><dd>Lower Struct, raise Smooth, or set Motion to Zero.</dd>
     <dt>A ghost of the previous shot after a cut</dt><dd>The exporter resets the neural history on detected cuts (<code>--cut-reset on</code>); raise <code>--cut-warmup</code> if the first frame after a cut is soft.</dd>
   </dl>
 </section>
