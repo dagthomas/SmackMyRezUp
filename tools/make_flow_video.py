@@ -5,12 +5,17 @@
 #
 # For each frame t, computes flow t -> t-1 (current pixel's displacement to its
 # previous-frame location - the DLSS motion-vector convention) with
-# torchvision's RAFT-small on the GPU, and encodes it as a video:
-#   R = dx, G = dy, mapped from [-24 .. +24] source pixels to [0 .. 255]
-#   (value 127.5 = zero motion), B = 128. First frame is zero flow.
-# Written as <stem>_flow.mp4 (yuv444p, near-lossless). SmackMyRezUp and
-# SmackMyRezUpExport decode this and feed it as the per-pixel MV field,
-# replacing the noisy CPU block matcher.
+# torchvision's RAFT-small on the GPU, and encodes it as a 10-bit video:
+#   R = dx, G = dy, mapped from [-range .. +range] source pixels across the
+#   full code range (mid-code = zero motion), B = mid-grey. First frame is
+#   zero flow. The range (--range, default 64 px) is written into the file as
+#   the smru_flow_range metadata tag, which the player and exporter read back.
+# Written as <stem>_flow.mp4 (yuv444p10le, near-lossless): 10 bits over
+# +/-64 px is a 0.15 px step, finer than the old 8-bit +/-24 px file (0.19 px)
+# with 2.7x the reach - a handheld pan at 720p passes 24 px/frame easily, and
+# a clamped vector is a wrong vector. SmackMyRezUp and SmackMyRezUpExport
+# decode this and feed it as the per-pixel MV field, replacing the noisy CPU
+# block matcher.
 #
 # --backend trt compiles RAFT into a TensorRT engine on first use (cached under
 # engines/, keyed by inference size, GPU and TensorRT version) and runs that
@@ -30,7 +35,7 @@ import torch
 import torch.nn.functional as F
 from torchvision.models.optical_flow import raft_small, Raft_Small_Weights
 
-FLOW_RANGE = 24.0  # +/- source pixels encoded across 0..255
+FLOW_RANGE = 64.0  # +/- source pixels encoded across the code range (--range)
 ITERS = 12         # RAFT refinement steps; torchvision's own default
 # How far a built engine may sit from the torch model on the synthetic pair in
 # verify_pair(), in inference pixels. Calibrated against measured builds: a
@@ -133,7 +138,12 @@ def main():
                     help="trt compiles a TensorRT engine on first use (cached in engines/)")
     ap.add_argument("--iters", type=int, default=ITERS,
                     help="RAFT refinement steps; fewer is faster and blurrier")
+    ap.add_argument("--range", type=float, default=FLOW_RANGE,
+                    help="+/- source px the encoding spans; written as the smru_flow_range tag")
     args = ap.parse_args()
+    rng = args.range
+    if not rng > 0.0:
+        sys.exit("--range must be positive")
 
     src = args.input
     out = args.out or os.path.splitext(src)[0] + "_flow.mp4"
@@ -161,16 +171,20 @@ def main():
         model = TrtBackend(ih, iw, args.iters, TorchBackend(ih, iw, dev, args.iters))
     else:
         model = TorchBackend(ih, iw, dev, args.iters)
-    print(f"[flowgen] backend={args.backend} inference={iw}x{ih} iters={args.iters}", flush=True)
+    print(f"[flowgen] backend={args.backend} inference={iw}x{ih} iters={args.iters} range=+/-{rng:g} px (10-bit)", flush=True)
 
     dec = subprocess.Popen([ffmpeg, "-hide_banner", "-loglevel", "error", "-i", src,
                             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                            stdout=subprocess.PIPE)
+    # 16-bit RGB in, 10-bit 4:4:4 H.264 out. The range tag needs use_metadata_tags,
+    # or the MP4 muxer drops keys it does not know.
     enc = subprocess.Popen([ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-                            "-f", "rawvideo", "-pix_fmt", "rgb24", "-video_size", f"{W}x{H}",
+                            "-f", "rawvideo", "-pix_fmt", "rgb48le", "-video_size", f"{W}x{H}",
                             "-framerate", f"{fps}", "-i", "-",
                             "-c:v", "libx264", "-preset", "fast", "-crf", "6",
-                            "-pix_fmt", "yuv444p", out],
+                            "-pix_fmt", "yuv444p10le",
+                            "-movflags", "use_metadata_tags", "-metadata", f"smru_flow_range={rng:g}",
+                            out],
                            stdin=subprocess.PIPE)
 
     def to_tensor(buf):
@@ -180,7 +194,7 @@ def main():
         return t / 127.5 - 1.0
 
     frame_bytes = W * H * 3
-    zero_enc = np.full((H, W, 3), (128, 128, 128), np.uint8)
+    zero_enc = np.full((H, W, 3), 32768, np.uint16)
     prev = None
     n = 0
     with torch.no_grad():
@@ -197,11 +211,11 @@ def main():
                                      mode="bilinear", align_corners=False)[0]
                 flow[0] *= up_x
                 flow[1] *= up_y
-                f = flow.permute(1, 2, 0).clamp(-FLOW_RANGE, FLOW_RANGE).cpu().numpy()
-                img = np.empty((H, W, 3), np.uint8)
-                img[..., 0] = np.clip(f[..., 0] / (2 * FLOW_RANGE) * 255.0 + 127.5, 0, 255).astype(np.uint8)
-                img[..., 1] = np.clip(f[..., 1] / (2 * FLOW_RANGE) * 255.0 + 127.5, 0, 255).astype(np.uint8)
-                img[..., 2] = 128
+                f = flow.permute(1, 2, 0).clamp(-rng, rng).cpu().numpy()
+                img = np.empty((H, W, 3), np.uint16)
+                img[..., 0] = np.clip(np.rint(f[..., 0] / (2 * rng) * 65535.0 + 32767.5), 0, 65535)
+                img[..., 1] = np.clip(np.rint(f[..., 1] / (2 * rng) * 65535.0 + 32767.5), 0, 65535)
+                img[..., 2] = 32768
                 enc.stdin.write(img.tobytes())
             prev = cur
             n += 1

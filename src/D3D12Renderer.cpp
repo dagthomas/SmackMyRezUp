@@ -324,11 +324,28 @@ SmoothOut PSSmooth(V i){
     res.d=float4(sm,1);
     return res;
 }
-float3 hsv2rgb(float3 c){float4 K=float4(1,2.0/3.0,1.0/3.0,3);float3 p=abs(frac(c.xxx+K.xyz)*6-K.www);return c.z*lerp(K.xxx,saturate(p-K.xxx),c.y);}
-// Video motion is typically sub-pixel to a few pixels per frame - far below
-// game-speed magnitudes - so the visualization gains are tuned for that range
-// (full saturation at ~0.5 px, full brightness ramp by ~6 px).
-float4 PSMotion(V i):SV_Target{float2 m=T.SampleLevel(S,ZoomUV(i.uv),0).rg;float mag=length(m);float h=frac(atan2(-m.y,m.x)/6.2831853+1.0);float v=saturate(0.12+mag/6.0);float3 c=hsv2rgb(float3(h,saturate(mag/0.5),v));return float4(c,1);}
+// MV debug view: the Middlebury / RAFT flow_viz colour wheel, so the picture
+// reads like every published optical-flow render - white where nothing moves,
+// hue = direction, colour depth = magnitude relative to this frame's peak
+// (Extra.w, measured on the CPU per frame and floored at 1 px so a static shot
+// does not blow sub-pixel noise up to full colour). Our field is current ->
+// previous while flow_viz takes previous -> current, so the angle is taken on
+// the negated field: the same footage gets the same hues as a RAFT render.
+float3 FlowWheel(float k){ // k in [0,55): the six Middlebury segments RY YG GC CB BM MR
+    if(k<15.0)return float3(1,k/15.0,0);
+    if(k<21.0)return float3(1-(k-15.0)/6.0,1,0);
+    if(k<25.0)return float3(0,1,(k-21.0)/4.0);
+    if(k<36.0)return float3(0,1-(k-25.0)/11.0,1);
+    if(k<49.0)return float3((k-36.0)/13.0,0,1);
+    return float3(1,0,1-(k-49.0)/6.0);
+}
+float4 PSMotion(V i):SV_Target{
+    float2 m=T.SampleLevel(S,ZoomUV(i.uv),0).rg;
+    float rad=saturate(length(m)/max(Extra.w,1e-3));
+    float a=atan2(m.y,m.x)/3.14159265;   // -1..1 = flow_viz's atan2(-v,-u) of the forward field
+    float3 c=FlowWheel((a+1.0)*0.5*54.0);
+    return float4(1.0-rad*(1.0-c),1);
+}
 float4 PSDepth(V i):SV_Target{float d=saturate(T.SampleLevel(S,ZoomUV(i.uv),0).r);d=pow(d,0.7);return float4(d,d,d,1);}
     // Depth comes directly from compact-guide B and is written through SV_Depth into
     // the exact typeless/D32 resource that NGX receives later in the frame.
@@ -353,9 +370,9 @@ float4 PSDepth(V i):SV_Target{float d=saturate(T.SampleLevel(S,ZoomUV(i.uv),0).r
     // The expanded field is always the estimated one so the MV debug view can
     // show it; Motion=Zero is honoured at NGX bind time with a zero texture.
     GuideOut PSExpandGuides(V i){float4 g=T.SampleLevel(S,i.uv+JitterUV,0);GuideOut o;o.mv=g.xy;o.bias=BiasOut(i.uv+JitterUV,g.w);return o;}
-    // External per-pixel flow (_flow.mp4): R/G encode [-24..24] source px around
-    // 127.5. Misc.xy carries decode-scale = 48 * (render / source) so the MV
-    // lands in DLSS-input pixels. Bias mask still comes from the compact grid.
+    // External per-pixel flow (_flow.mp4): R/G encode [-range..range] source px
+    // around mid-code. Misc.xy carries decode-scale = 2*range * (render / source)
+    // so the MV lands in DLSS-input pixels. Bias mask still comes from the grid.
     GuideOut PSExpandGuidesExt(V i){
         float4 g=T.SampleLevel(S,i.uv+JitterUV,0);
         float2 e=Aux0.SampleLevel(S,i.uv+JitterUV,0).rg;
@@ -597,16 +614,16 @@ bool D3D12Renderer::CreateVideoResources(){
     }
     m_smoothCur=0;m_smoothHasHistory=false;
     if(m_useExtFlow){
-        auto flt=Tex2D(DXGI_FORMAT_B8G8R8A8_UNORM,m_sourceW,m_sourceH,D3D12_RESOURCE_FLAG_NONE);
+        auto flt=Tex2D(DXGI_FORMAT_R16G16B16A16_UNORM,m_sourceW,m_sourceH,D3D12_RESOURCE_FLAG_NONE);
         if(!HR(m_device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&flt,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&m_extFlowTex)),"Create external flow texture"))return false;
-        m_extFlowTex->SetName(L"External_ModelFlow_BGRA");
+        m_extFlowTex->SetName(L"External_ModelFlow_RGBA16");
         for(uint32_t i=0;i<FrameCount;++i){
             D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};uint32_t rows=0;uint64_t rowBytes=0,total=0;
             if(!CreateUploadForTexture(flt,m_extFlowUpload[i],m_extFlowMapped[i],fp,rows,rowBytes,total,"Create external flow upload"))return false;
             if(i==0){m_extFlowFootprint=fp;m_extFlowRows=rows;m_extFlowRowSize=rowBytes;m_extFlowUploadBytes=total;}
         }
-        srv.Format=DXGI_FORMAT_B8G8R8A8_UNORM;m_device->CreateShaderResourceView(m_extFlowTex.Get(),&srv,SRVCPU(12));
-        LOG("External model flow armed: BGRA " << m_sourceW << "x" << m_sourceH << " replaces the CPU block-matcher MV field when supplied per frame.");
+        srv.Format=DXGI_FORMAT_R16G16B16A16_UNORM;m_device->CreateShaderResourceView(m_extFlowTex.Get(),&srv,SRVCPU(12));
+        LOG("External model flow armed: RGBA16 " << m_sourceW << "x" << m_sourceH << " replaces the CPU block-matcher MV field when supplied per frame.");
     }
     if(m_useExtMask){
         // Slot 13 = t3 (Aux1) inside the t1..t4 table; it otherwise holds a fallback view.
@@ -737,20 +754,33 @@ void D3D12Renderer::CopyMappedRows(uint8_t*mapped,const D3D12_PLACED_SUBRESOURCE
 
 float D3D12Renderer::Halton(uint32_t index,uint32_t base){float f=1.0f,r=0.0f;while(index){f/=float(base);r+=f*float(index%base);index/=base;}return r;}
 
-bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guideGridRGBA32F,size_t guideBytes,uint32_t gridW,uint32_t gridH,bool temporalReset,const uint8_t*extDepthR16,size_t extDepthBytes,const uint8_t*extFlowBGRA,size_t extFlowBytes,const uint8_t*extMaskBGRA,size_t extMaskBytes){
-    // Deep input frames are RGBA16 (8 bytes/px); external flow stays BGRA8.
-    const size_t videoRow=size_t(m_sourceW)*(m_deepInput?8u:4u),flowRow=size_t(m_sourceW)*4u,guideRow=size_t(m_gridW)*sizeof(float)*4u,depthRow=size_t(m_sourceW)*2u;
+// Peak motion-vector magnitude of a frame in DLSS-input pixels, for the MV
+// debug view: like RAFT's flow_viz it scales colour by the frame's own maximum.
+// The flow frame is sampled every 4th pixel; the compact grid is read whole.
+static float PeakFlowRGBA16(const uint8_t*rgba16,uint32_t w,uint32_t h,float scaleX,float scaleY){
+    const uint16_t*p=reinterpret_cast<const uint16_t*>(rgba16);float best=0.0f;
+    for(uint32_t y=0;y<h;y+=4){const uint16_t*row=p+size_t(y)*w*4u;
+        for(uint32_t x=0;x<w;x+=4){const float dx=(float(row[size_t(x)*4u])/65535.0f-0.5f)*scaleX,dy=(float(row[size_t(x)*4u+1])/65535.0f-0.5f)*scaleY;best=std::max(best,dx*dx+dy*dy);}}
+    return std::sqrt(best);
+}
+static float PeakFlowGrid(const float*rgba32f,uint32_t w,uint32_t h){
+    float best=0.0f;for(size_t i=0,n=size_t(w)*h;i<n;++i){const float dx=rgba32f[i*4],dy=rgba32f[i*4+1];best=std::max(best,dx*dx+dy*dy);}
+    return std::sqrt(best);
+}
+bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guideGridRGBA32F,size_t guideBytes,uint32_t gridW,uint32_t gridH,bool temporalReset,const uint8_t*extDepthR16,size_t extDepthBytes,const uint8_t*extFlowRGBA16,size_t extFlowBytes,const uint8_t*extMaskBGRA,size_t extMaskBytes){
+    // Deep input frames and external flow are RGBA16 (8 bytes/px); the mask stays BGRA8.
+    const size_t videoRow=size_t(m_sourceW)*(m_deepInput?8u:4u),flowRow=size_t(m_sourceW)*8u,maskRow=size_t(m_sourceW)*4u,guideRow=size_t(m_gridW)*sizeof(float)*4u,depthRow=size_t(m_sourceW)*2u;
     if(!bgra||bytes<videoRow*m_sourceH||!guideGridRGBA32F||gridW!=m_gridW||gridH!=m_gridH||guideBytes<guideRow*m_gridH)return false;
     const bool haveExtDepth=m_useExtDepth&&m_extDepthTex&&extDepthR16&&extDepthBytes>=depthRow*m_sourceH;
-    const bool haveExtFlow=m_useExtFlow&&m_extFlowTex&&extFlowBGRA&&extFlowBytes>=flowRow*m_sourceH;
-    const bool haveExtMask=m_useExtMask&&m_extMaskTex&&extMaskBGRA&&extMaskBytes>=flowRow*m_sourceH;
+    const bool haveExtFlow=m_useExtFlow&&m_extFlowTex&&extFlowRGBA16&&extFlowBytes>=flowRow*m_sourceH;
+    const bool haveExtMask=m_useExtMask&&m_extMaskTex&&extMaskBGRA&&extMaskBytes>=maskRow*m_sourceH;
     const uint32_t slot=m_frameSlot%FrameCount;
     if(!WaitForFrameSlot(slot)) return false;
     CopyMappedRows(m_uploadMapped[slot],m_uploadFootprint,bgra,videoRow,m_sourceH);
     CopyMappedRows(m_guideMapped[slot],m_guideFootprint,guideGridRGBA32F,guideRow,m_gridH);
     if(haveExtDepth)CopyMappedRows(m_extDepthMapped[slot],m_extDepthFootprint,extDepthR16,depthRow,m_sourceH);
-    if(haveExtFlow)CopyMappedRows(m_extFlowMapped[slot],m_extFlowFootprint,extFlowBGRA,flowRow,m_sourceH);
-    if(haveExtMask)CopyMappedRows(m_extMaskMapped[slot],m_extMaskFootprint,extMaskBGRA,flowRow,m_sourceH);
+    if(haveExtFlow)CopyMappedRows(m_extFlowMapped[slot],m_extFlowFootprint,extFlowRGBA16,flowRow,m_sourceH);
+    if(haveExtMask)CopyMappedRows(m_extMaskMapped[slot],m_extMaskFootprint,extMaskBGRA,maskRow,m_sourceH);
     if(!HR(m_allocators[slot]->Reset(),"Reset frame allocator")) return false;
     auto* cmd=m_cmds[slot].Get();
     if(!HR(cmd->Reset(m_allocators[slot].Get(),nullptr),"Reset frame command list")) return false;
@@ -817,14 +847,16 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
     cmd->SetGraphicsRootDescriptorTable(2,SRVGPU(11));
     if(m_extFlowValid&&m_extFlowEnabled){
         // Model flow replaces the block-matcher MV field; decode scale maps the
-        // [-24..24] source-px encoding into DLSS-input pixels.
+        // [-range..range] source-px encoding into DLSS-input pixels.
         cmd->SetPipelineState(m_psoExpandGuidesExt.Get());
         cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(6)); // t2 = flow texture (table 2 bound above)
-        guideParams[2]=48.0f*float(m_renderW)/float(std::max(1u,m_sourceW));
-        guideParams[3]=48.0f*float(m_renderH)/float(std::max(1u,m_sourceH));
+        guideParams[2]=2.0f*m_extFlowRange*float(m_renderW)/float(std::max(1u,m_sourceW));
+        guideParams[3]=2.0f*m_extFlowRange*float(m_renderH)/float(std::max(1u,m_sourceH));
+        if(!m_exportMode&&haveExtFlow)m_mvVisMax=PeakFlowRGBA16(extFlowRGBA16,m_sourceW,m_sourceH,guideParams[2],guideParams[3]);
     } else {
         cmd->SetPipelineState(m_psoExpandGuides.Get());
         cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(6));
+        if(!m_exportMode)m_mvVisMax=PeakFlowGrid(guideGridRGBA32F,m_gridW,m_gridH);
     }
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);cmd->SetGraphicsRoot32BitConstants(1,8,guideParams,0);cmd->DrawInstanced(3,1,0,0);
     Barrier(cmd,m_motion.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,GuideReadState);Barrier(cmd,m_biasCurrent.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,GuideReadState);m_guidesInRT=false;
@@ -962,7 +994,7 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
     const float zx=std::clamp(m_zoomCX-zs*0.5f,0.0f,1.0f-zs);
     const float zy=std::clamp(m_zoomCY-zs*0.5f,0.0f,1.0f-zs);
     float presentParams[16]={zx,zy,compareOn?(m_fxBypassIndicator?2.0f:1.0f):(toneActive?m_toneMix:0.0f),zs,cs.brightness,cs.contrast,cs.saturation,cs.gamma,cs.temperature,cs.tint,0,0,
-                             compareOn?float(m_compareMode):0.0f,m_comparePos,applyColor?m_postSharpen:0.0f,0};
+                             compareOn?float(m_compareMode):0.0f,m_comparePos,applyColor?m_postSharpen:0.0f,std::max(m_mvVisMax,1.0f)};
     cmd->SetGraphicsRoot32BitConstants(1,16,presentParams,0);
     if(m_labelAtlas)cmd->SetGraphicsRootDescriptorTable(3,SRVGPU(16)); // t5 overlay labels (PSPresent)
     // DLSS inputs stay shader-readable for NGX. Only the texture selected for the
@@ -1105,7 +1137,7 @@ bool D3D12Renderer::PresentCurrent(){
     const float zx=std::clamp(m_zoomCX-zs*0.5f,0.0f,1.0f-zs);
     const float zy=std::clamp(m_zoomCY-zs*0.5f,0.0f,1.0f-zs);
     float presentParams[16]={zx,zy,compareOn?(m_fxBypassIndicator?2.0f:1.0f):(toneActive?m_toneMix:0.0f),zs,cs.brightness,cs.contrast,cs.saturation,cs.gamma,cs.temperature,cs.tint,0,0,
-                             compareOn?float(m_compareMode):0.0f,m_comparePos,applyColor?m_postSharpen:0.0f,0};
+                             compareOn?float(m_compareMode):0.0f,m_comparePos,applyColor?m_postSharpen:0.0f,std::max(m_mvVisMax,1.0f)};
     cmd->SetGraphicsRoot32BitConstants(1,16,presentParams,0);
     if(m_labelAtlas)cmd->SetGraphicsRootDescriptorTable(3,SRVGPU(16)); // t5 overlay labels (PSPresent)
 

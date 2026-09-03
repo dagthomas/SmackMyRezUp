@@ -52,17 +52,20 @@ public:
                      uint32_t gridW, uint32_t gridH,
                      bool temporalReset,
                      const uint8_t* extDepthR16 = nullptr, size_t extDepthBytes = 0,
-                     const uint8_t* extFlowBGRA = nullptr, size_t extFlowBytes = 0,
+                     const uint8_t* extFlowRGBA16 = nullptr, size_t extFlowBytes = 0,
                      const uint8_t* extMaskBGRA = nullptr, size_t extMaskBytes = 0);
     void EnableExternalDepth() { m_useExtDepth = true; }
     // Runtime A/B gates: with external data armed, these switch between the
     // model-supplied guide and the built-in fallback instantly (no reload).
     void SetExternalDepthEnabled(bool on) { m_extDepthEnabled = on; }
     void SetExternalFlowEnabled(bool on) { m_extFlowEnabled = on; }
-    // extFlowBGRA: optional decoded frame of a _flow.mp4 (R = dx, G = dy mapped
-    // from [-24..24] source px to 0..255, 127.5 = zero). Replaces the CPU block
-    // matcher's motion-vector field entirely. Enable BEFORE Initialize().
+    // extFlowRGBA16: optional decoded frame of a _flow.mp4 as RGBA 16-bit (R = dx,
+    // G = dy in source px, mapped from -range..+range across the code range,
+    // mid-code = zero). Replaces the CPU block matcher's motion-vector field
+    // entirely. Enable BEFORE Initialize(). The range is the file's
+    // smru_flow_range tag; 24 px when absent (the legacy 8-bit contract).
     void EnableExternalFlow() { m_useExtFlow = true; }
+    void SetExternalFlowRange(float px) { m_extFlowRange = px > 0.0f ? px : 24.0f; }
     // extMaskBGRA: optional decoded frame of a _mask.mp4 (a segmentation mask -
     // white = process here). Replaces the block-matcher uncertainty as the
     // ControlMask source, and unlike it keeps soft edges instead of a hard
@@ -297,6 +300,7 @@ private:
     uint32_t m_nrMaskMode = 0;
     bool m_fxBypassIndicator = false;
     float m_nrMVScale = -1.0f;
+    float m_mvVisMax = 1.0f; // this frame's peak |MV| in DLSS-input px; scales the MV debug view
     float m_mvFieldScale = 1.0f;
     float m_preSharpen = 0.0f;
     float m_postSharpen = 0.0f;
@@ -349,6 +353,7 @@ private:
     bool m_useExtFlow = false;
     bool m_extFlowValid = false;
     bool m_extFlowInCopyDest = true;
+    float m_extFlowRange = 24.0f;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_extFlowTex;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_extFlowUpload[FrameCount];
     uint8_t* m_extFlowMapped[FrameCount]{};

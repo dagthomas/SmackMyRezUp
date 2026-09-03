@@ -712,11 +712,13 @@ private:
         const auto [guideW,guideH]=TemporalGuideGenerator::AnalysisGrid(m_decoder.Width(),m_decoder.Height(),m_decoder.FrameRate());
         m_flowLoaded=false;m_haveFlowFrame=false;m_flowDecoder.Close();
         {const std::wstring fp=FlowVideoPathFor(path);
+         m_flowDecoder.SetDeepOutput(true); // 10-bit sidecars decode as RGBA16
          if(std::filesystem::exists(fp)&&m_flowDecoder.Open(fp)){
             if(m_flowDecoder.Width()!=m_decoder.Width()||m_flowDecoder.Height()!=m_decoder.Height())
                 m_flowDecoder.SetDecodeSize(m_decoder.Width(),m_decoder.Height());
             if(m_flowDecoder.Width()==m_decoder.Width()&&m_flowDecoder.Height()==m_decoder.Height()){
-                m_flowLoaded=true;LOG("RAFT flow video attached to live playback.");
+                m_flowLoaded=true;
+                LOG("RAFT flow video attached to live playback: "<<m_flowDecoder.PixelFormat()<<", +/-"<<(m_flowDecoder.FlowRangePx()>0.0?m_flowDecoder.FlowRangePx():24.0)<<" px"<<(m_flowDecoder.FlowRangePx()>0.0?"":" (untagged: legacy 8-bit range)")<<".");
             } else {m_flowDecoder.Close();LOG("Flow video size mismatch; live attach skipped.");}
          }}
         // Depth-map live attach (restored): <stem>_depth.mp4 (Depth Anything,
@@ -747,7 +749,7 @@ private:
         m_renderer=std::make_unique<D3D12Renderer>();
         m_renderer->SetNRSettings(CurrentNRSettings());
         m_renderer->SetSuperRes(m_srUpscale);
-        if(m_flowLoaded)m_renderer->EnableExternalFlow();
+        if(m_flowLoaded){m_renderer->EnableExternalFlow();m_renderer->SetExternalFlowRange(float(m_flowDecoder.FlowRangePx()));}
         if(m_depthLoaded)m_renderer->EnableExternalDepth();
         if(m_maskLoaded)m_renderer->EnableExternalMask();
         m_lutLoaded=false;

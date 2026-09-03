@@ -791,13 +791,16 @@ int RunFile(Options o) {
     }
     // Optional RAFT flow movie: replaces the block-matcher MV field per frame.
     VideoDecoder flowDec;
+    flowDec.SetDeepOutput(true); // 10-bit sidecars decode as RGBA16
     bool haveFlowVideo = false;
     if (!o.flowVideo.empty()) {
         if (flowDec.Open(o.flowVideo)) {
             if (flowDec.Width() != W || flowDec.Height() != H) flowDec.SetDecodeSize(W, H);
             if (flowDec.Width() == W && flowDec.Height() == H) {
                 haveFlowVideo = true;
-                fprintf(stderr, SMRU_LOG_TAG " flow video attached: %ls\n", o.flowVideo.c_str());
+                fprintf(stderr, SMRU_LOG_TAG " flow video attached: %ls (%s, +/-%.0f px%s)\n", o.flowVideo.c_str(),
+                        flowDec.PixelFormat().c_str(), flowDec.FlowRangePx() > 0.0 ? flowDec.FlowRangePx() : 24.0,
+                        flowDec.FlowRangePx() > 0.0 ? "" : ", untagged: legacy 8-bit range");
             }
         }
         if (!haveFlowVideo) {
@@ -844,6 +847,7 @@ int RunFile(Options o) {
 
     Pipeline p;
     if (!p.Init(o, procW, procH, fps)) return 5;
+    if (haveFlowVideo) p.renderer.SetExternalFlowRange(float(flowDec.FlowRangePx()));
     const uint32_t outW = p.renderer.OutputW(), outH = p.renderer.OutputH();
 
     if (o.compare && o.split) { fprintf(stderr, SMRU_LOG_TAG " --compare and --split are mutually exclusive\n"); return 2; }
@@ -918,7 +922,7 @@ int RunFile(Options o) {
         const uint8_t* fptr = nullptr;
         size_t fbytes = 0;
         if (haveFlowVideo && !flowEnded) {
-            if (flowDec.ReadNext(ff) && ff.bgra.size() >= size_t(W) * H * 4) {
+            if (flowDec.ReadNext(ff) && ff.bgra.size() >= size_t(W) * H * flowDec.BytesPerPixel()) {
                 flowPlane.swap(ff.bgra);
                 fptr = flowPlane.data(); fbytes = flowPlane.size();
             } else {

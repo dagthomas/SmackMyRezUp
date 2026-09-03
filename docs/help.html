@@ -216,7 +216,7 @@
   <p>A guide is an ordinary video that sits <strong>beside the movie with the same name plus a suffix</strong>. The player attaches it on load; the exporter takes it with a flag. Whether it is actually <em>bound</em> into the neural pass is a separate switch, listed in the last column.</p>
   <div class="tbl"><table>
     <tr><th>File</th><th>Carries</th><th>Pixel encoding</th><th>Bound when</th></tr>
-    <tr><td class="k"><code>&lt;name&gt;_flow.mp4</code></td><td>Motion vectors, one per pixel: where the current pixel <em>was</em> in the previous frame (current → previous, the DLSS convention)</td><td>RGB, <code>yuv444p</code>. R = dx, G = dy in <strong>source pixels</strong>, mapped from −24 … +24 to 0 … 255 (127.5 = no motion); B = 128. First frame all zero. +x right, +y down.</td><td>Motion = Model and the Flow toggle on; exporter <code>--flow-video</code> with <code>--mv estimated</code></td></tr>
+    <tr><td class="k"><code>&lt;name&gt;_flow.mp4</code></td><td>Motion vectors, one per pixel: where the current pixel <em>was</em> in the previous frame (current → previous, the DLSS convention)</td><td>RGB, <code>yuv444p10le</code>. R = dx, G = dy in <strong>source pixels</strong>, mapped from −range … +range across the full code range (mid-code = no motion); B = mid-grey. The range is the file's <code>smru_flow_range</code> metadata tag (GenFlow writes 64); a file without the tag is read as the legacy 8-bit ±24 px encoding. First frame all zero. +x right, +y down.</td><td>Motion = Model and the Flow toggle on; exporter <code>--flow-video</code> with <code>--mv estimated</code></td></tr>
     <tr><td class="k"><code>&lt;name&gt;_depth.mp4</code></td><td>Relative depth</td><td>Grayscale (<code>gray</code> or <code>yuv420p</code>): <strong>bright = near</strong>, dark = far. Any consistent normalisation; the player inverts it into the runtime's 0 = near contract.</td><td>DepthMap toggle on; exporter <code>--depth-video</code> (+ <code>--nr-guides mv,depth</code>). The current runtime ignores depth.</td></tr>
     <tr><td class="k"><code>&lt;name&gt;_mask.mp4</code></td><td>Where the neural pass should act</td><td>Grayscale: <strong>white = process here</strong>, black = leave alone; grey values are soft weights, feathered edges are fine.</td><td>MaskNR toggle on; exporter <code>--mask-video</code> with <code>--nr-guides mv,mask</code></td></tr>
     <tr><td class="k"><code>&lt;name&gt;_mask_&lt;phrase&gt;.mp4</code></td><td>One mask per prompt phrase (from GenMask <code>--layers</code>)</td><td>Same as above</td><td>Kept for per-object control; not bound by the player yet — the union file is what attaches</td></tr>
@@ -226,7 +226,7 @@
     <li>Resolution may differ from the movie — the guide is rescaled to the source size on decode (a size mismatch that cannot be rescaled is skipped and logged).</li>
     <li>Match the frame rate and frame count. If the guide is shorter, its last frame is reused.</li>
     <li>Guides are calibrated to the source geometry, so the exporter drops them when <code>--scaler lanczos</code> resizes on the CPU first.</li>
-    <li>Encode near-lossless (<code>-crf 6</code> or better): 8-bit values are already coarse — one flow step is 48/255 ≈ 0.19 px.</li>
+    <li>Encode near-lossless (<code>-crf 6</code> or better): one 10-bit flow step over ±64 px is already 0.15 px. The old 8-bit ±24 px files step 0.19 px and clip on any pan faster than 24 px per frame — a handheld 720p shot gets there.</li>
   </ul>
 </section>
 
@@ -236,11 +236,12 @@
 
   <h3>Motion vectors from raw values</h3>
   <p>For each pixel with motion <code>(dx, dy)</code> in source pixels, current → previous:</p>
-<pre>R = clamp( dx / 48 × 255 + 127.5 , 0, 255 )
-G = clamp( dy / 48 × 255 + 127.5 , 0, 255 )
-B = 128</pre>
-  <p>If your source gives previous → current vectors (most optical-flow tools and Blender's Vector pass do), negate them first. Then:</p>
-<pre>ffmpeg -framerate 24 -i flow_%04d.png -c:v libx264 -preset fast -crf 6 -pix_fmt yuv444p movie_flow.mp4</pre>
+<pre>range = 64                                                (source px; pick any, tag it below)
+R = clamp( dx / (2 × range) × 65535 + 32768 , 0, 65535 )   16-bit PNG
+G = clamp( dy / (2 × range) × 65535 + 32768 , 0, 65535 )
+B = 32768</pre>
+  <p>If your source gives previous → current vectors (most optical-flow tools and Blender's Vector pass do), negate them first. Then encode 10-bit and write the range into the file:</p>
+<pre>ffmpeg -framerate 24 -i flow_%04d.png -c:v libx264 -preset fast -crf 6 -pix_fmt yuv444p10le -movflags use_metadata_tags -metadata smru_flow_range=64 movie_flow.mp4</pre>
 
   <h3>Depth from any model or a Z pass</h3>
   <p>Normalise so near is bright. From a renderer's Z (distance) pass: <code>value = 1 − (z − z_near) / (z_far − z_near)</code>, clamped 0…1, then ×255. Keep the normalisation stable across the shot or the guide will pulse.</p>
@@ -341,7 +342,7 @@ B = 128</pre>
     <li><strong>Model.</strong> RAFT-small trades accuracy for speed; RAFT-large or SEA-RAFT are drop-in upgrades with the same output contract.</li>
     <li><strong>Consistency.</strong> A forward–backward check (flow t→t−1 against t−1→t) finds occluded and unreliable pixels; zeroing those beats trusting a wrong vector, because the runtime rewards smooth, consistent fields.</li>
     <li><strong>Geometry.</strong> Fit the camera motion to the flow, render the dense field from the depth guide (parallax ∝ 1/depth), and keep RAFT only for the residual of independently moving objects. That reproduces the smooth, depth-shaped field a renderer produces.</li>
-    <li><strong>Precision.</strong> The 8-bit ±24 px encoding quantises to 0.19 px; a 16-bit sidecar removes that.</li>
+    <li><strong>Precision.</strong> The 10-bit ±64 px encoding quantises to 0.15 px; a lossless 16-bit sidecar would remove that, and <code>--range</code> can be lowered on slow footage to trade reach for precision.</li>
     <li><strong>Ground truth.</strong> Rendered footage can carry its real Vector pass — see <a href="#custom">From Blender</a>.</li>
   </ul>
   <h3>Depth</h3>

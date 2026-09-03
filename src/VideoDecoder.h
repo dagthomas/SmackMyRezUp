@@ -24,6 +24,18 @@ public:
     bool ReadNext(VideoFrame& out);
     bool SeekSeconds(double seconds);
     bool SetDecodeSize(uint32_t width, uint32_t height);
+    // Deep output: frames arrive as RGBA 16-bit little-endian (8 bytes/px,
+    // channel order R, G, B, A) instead of BGRA 8-bit, so 10-bit sources keep
+    // their precision. Set before Open(); needs the FFmpeg backend (Media
+    // Foundation is not tried). Used for _flow.mp4 sidecars.
+    void SetDeepOutput(bool on) { m_deep = on; }
+    bool DeepOutput() const { return m_deep; }
+    uint32_t BytesPerPixel() const { return m_deep ? 8u : 4u; }
+    // The smru_flow_range metadata tag of a flow sidecar: the source-pixel
+    // displacement (+/-) mapped across the full code range. 0 when the file
+    // carries none (the legacy contract, +/-24 px over 8 bits).
+    double FlowRangePx() const { return m_flowRange; }
+    const std::string& PixelFormat() const { return m_pixFmt; }
 
     uint32_t Width() const { return m_width; }
     uint32_t Height() const { return m_height; }
@@ -58,6 +70,9 @@ private:
     double m_fps = 30.0;
     double m_durationSec = 0.0;
     double m_displayAspect = 0.0;
+    bool m_deep = false;
+    double m_flowRange = 0.0;
+    std::string m_pixFmt;
 
     std::wstring m_ffmpegExe;
     std::wstring m_ffprobeExe;

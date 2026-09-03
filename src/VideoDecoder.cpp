@@ -57,6 +57,8 @@ bool VideoDecoder::Open(const std::wstring& path) {
     m_fps = 30.0;
     m_durationSec = 0.0;
     m_displayAspect = 0.0;
+    m_flowRange = 0.0;
+    m_pixFmt.clear();
 
     LOG("Opening video. Decoder preference: FFmpeg -> Windows Media Foundation");
 
@@ -68,6 +70,10 @@ bool VideoDecoder::Open(const std::wstring& path) {
         return true;
     }
 
+    if (m_deep) {
+        LOG("FFmpeg backend unavailable or rejected the file; deep (16-bit) output has no Media Foundation path.");
+        return false;
+    }
     LOG("FFmpeg backend unavailable or rejected the file; trying Media Foundation.");
     if (OpenMediaFoundation(path)) {
         m_backend = Backend::MediaFoundation;
@@ -82,7 +88,7 @@ bool VideoDecoder::Open(const std::wstring& path) {
 bool VideoDecoder::ProbeFFmpeg(const std::wstring& path) {
     std::wstring args =
         L"-v error -select_streams v:0 "
-        L"-show_entries stream=width,height,display_aspect_ratio,sample_aspect_ratio,avg_frame_rate,r_frame_rate:format=duration "
+        L"-show_entries stream=width,height,display_aspect_ratio,sample_aspect_ratio,avg_frame_rate,r_frame_rate,pix_fmt:format=duration:format_tags=smru_flow_range "
         L"-of default=noprint_wrappers=1 " + smru::proc::Quote(path);
 
     // stderr stays on NUL: the key=value lines below are parsed as they come,
@@ -120,6 +126,8 @@ bool VideoDecoder::ProbeFFmpeg(const std::wstring& path) {
             else if (key == "avg_frame_rate") ParseRate(value, avgRate);
             else if (key == "r_frame_rate") ParseRate(value, rawRate);
             else if (key == "duration" && value != "N/A") duration = std::stod(value);
+            else if (key == "pix_fmt") m_pixFmt = value;
+            else if (key == "TAG:smru_flow_range") m_flowRange = std::clamp(std::stod(value), 0.0, 65535.0);
         } catch (const std::exception& e) {
             LOG("ffprobe: ignoring unparsable " << key << "=" << value << " (" << e.what() << ")");
         }
@@ -134,7 +142,7 @@ bool VideoDecoder::ProbeFFmpeg(const std::wstring& path) {
     m_nativeHeight = height;
     m_width = width;
     m_height = height;
-    m_stride = static_cast<int32_t>(m_width * 4u);
+    m_stride = static_cast<int32_t>(m_width * BytesPerPixel());
     m_fps = avgRate > 0.0 ? avgRate : (rawRate > 0.0 ? rawRate : 30.0);
     m_durationSec = (std::isfinite(duration) && duration > 0.0) ? duration : 0.0;
     if (std::isfinite(displayAspect) && displayAspect > 0.1) m_displayAspect = displayAspect;
@@ -160,7 +168,7 @@ bool VideoDecoder::StartFFmpeg(double seekSeconds) {
          << L" -map 0:v:0 -an -sn -dn ";
     if (m_nativeWidth && m_nativeHeight && (m_width != m_nativeWidth || m_height != m_nativeHeight))
         args << L"-vf scale=" << m_width << L":" << m_height << L":flags=bicubic ";
-    args << L"-pix_fmt bgra -fps_mode cfr -r "
+    args << (m_deep ? L"-pix_fmt rgba64le " : L"-pix_fmt bgra ") << L"-fps_mode cfr -r "
          << std::fixed << std::setprecision(6) << m_fps
          << L" -f rawvideo pipe:1";
 
@@ -179,7 +187,7 @@ bool VideoDecoder::StartFFmpeg(double seekSeconds) {
     m_ffmpegStdout = child.stdOut;
     m_ffmpegFrameIndex = 0;
     m_ffmpegSeekBase100ns = static_cast<int64_t>(seekSeconds * 10000000.0);
-    LOG("FFmpeg raw BGRA decode process started.");
+    LOG("FFmpeg raw " << (m_deep ? "RGBA16" : "BGRA") << " decode process started.");
     return true;
 }
 
@@ -215,7 +223,7 @@ bool VideoDecoder::OpenFFmpeg(const std::wstring& path) {
 
 bool VideoDecoder::ReadNextFFmpeg(VideoFrame& out) {
     if (!m_ffmpegStdout) return false;
-    const size_t frameBytes = static_cast<size_t>(m_width) * static_cast<size_t>(m_height) * 4u;
+    const size_t frameBytes = static_cast<size_t>(m_width) * static_cast<size_t>(m_height) * BytesPerPixel();
     if (!frameBytes) return false;
 
     out.bgra.resize(frameBytes);
