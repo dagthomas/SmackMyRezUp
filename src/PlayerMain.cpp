@@ -824,8 +824,21 @@ private:
         m_pipeline->SetMotionMode(m_motionMode==1?FramePipeline::MotionMode::GlobalPan
                                  :m_motionMode==0?FramePipeline::MotionMode::Zero
                                                  :FramePipeline::MotionMode::Estimated);
-        return m_pipeline->Render(f.bgra.data(),f.bgra.size(),m_dlssReset||resetGuide,sc);
+        const bool reset=m_dlssReset||resetGuide;
+        if(!m_pipeline->Render(f.bgra.data(),f.bgra.size(),reset,sc))return false;
+        // A reset leaves the neural history empty, and the first evaluation after
+        // it is the soft one - the exporter discards two such warm-up renders
+        // before it keeps a frame. Playback converges it over the next frames; a
+        // STILL (open, a paused seek, a toggle while paused) would sit on that
+        // soft first pass until something happened to force a re-render, which is
+        // what made a paused preview look like the neural pass was off.
+        if(reset&&!m_playing){
+            for(int i=0;i<kStillWarmup;++i)
+                if(!m_pipeline->Render(f.bgra.data(),f.bgra.size(),false,sc))return false;
+        }
+        return true;
     }
+    static constexpr int kStillWarmup=2;   // matches the exporter's --warmup default
 
     // The decode size a preset asks for: a fraction of the output box.
     static double ScaleFactor(DecodeScale s) {
@@ -2162,7 +2175,18 @@ private:
     double SecondsFromX(int x)const{RECT r=TimelineRect();const LONG span=(r.right>r.left)?(r.right-r.left):LONG(1);double t=double(LONG(x)-r.left)/double(span);return std::clamp(t,0.0,1.0)*m_decoder.DurationSeconds();}
     void SetVolumeFromX(int x){RECT r=VolumeRect();const LONG span=(r.right>r.left)?(r.right-r.left):LONG(1);m_volume=float(std::clamp(double(LONG(x)-r.left)/double(span),0.0,1.0));m_audio.SetVolume(m_volume);InvalidateControls();}
     void ToggleMute(){m_muted=!m_muted;m_audio.SetVolume(m_muted?0.0f:m_volume);InvalidateControls();}
-    void ToggleDLSS(){if(!m_renderer)return;m_renderer->SetDLSS(!m_renderer->DLSSEnabled());m_dlssReset=true;if(!m_playing)m_renderer->PresentCurrent();InvalidateControls();}
+    // Paused: a plain re-present would keep showing whatever the LAST render
+    // produced (the input, if the pass was off), so the still is rendered again
+    // through the full pipeline - warm-up included - and the reset is consumed.
+    void ToggleDLSS(){
+        if(!m_renderer)return;
+        m_renderer->SetDLSS(!m_renderer->DLSSEnabled());m_dlssReset=true;
+        if(!m_playing){
+            if(m_loaded&&!m_lastFrame.bgra.empty()){RenderVideoFrame(m_lastFrame,true);m_dlssReset=false;}
+            else m_renderer->PresentCurrent();
+        }
+        InvalidateControls();
+    }
 
     // ---- Inspection zoom -----------------------------------------------------
     void ApplyZoom(){
