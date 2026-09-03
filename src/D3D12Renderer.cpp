@@ -1,6 +1,8 @@
 #include "D3D12Renderer.h"
 #include "Log.h"
 #include <d3dcompiler.h>
+#include <d3d12sdklayers.h>
+#include <vector>
 #include <algorithm>
 #include <cstring>
 #include <cmath>
@@ -56,9 +58,11 @@ bool D3D12Renderer::Initialize(HWND hwnd,uint32_t sourceW,uint32_t sourceH,uint3
 
 bool D3D12Renderer::CreateDeviceAndSwapchain(HWND hwnd) {
     UINT ff=0;
-#if defined(_DEBUG)
-    ComPtr<ID3D12Debug> dbg; if(SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg)))) { dbg->EnableDebugLayer(); ff|=DXGI_CREATE_FACTORY_DEBUG; }
-#endif
+    // SMRU_D3D_DEBUG=1 turns the D3D12 debug layer on in ANY build (a Debug
+    // configuration cannot link: the NGX static lib is built against the release
+    // CRT). Whatever the layer flags is logged at every GPU wait.
+    const bool wantDebug=GetEnvironmentVariableW(L"SMRU_D3D_DEBUG",nullptr,0)>0;
+    if(wantDebug){ ComPtr<ID3D12Debug> dbg; if(SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg)))) { dbg->EnableDebugLayer(); ff|=DXGI_CREATE_FACTORY_DEBUG; } }
     if(!HR(CreateDXGIFactory2(ff,IID_PPV_ARGS(&m_factory)),"CreateDXGIFactory2")) return false;
     ComPtr<IDXGIAdapter1> fallback;
     for(UINT i=0;;++i){
@@ -70,6 +74,10 @@ bool D3D12Renderer::CreateDeviceAndSwapchain(HWND hwnd) {
     if(!m_adapter)m_adapter=fallback; if(!m_adapter){LOG("No D3D12 hardware adapter.");return false;}
     DXGI_ADAPTER_DESC1 ad{};m_adapter->GetDesc1(&ad);LOG("D3D12 adapter vendor=0x"<<std::hex<<ad.VendorId<<" device=0x"<<ad.DeviceId);
     if(!HR(D3D12CreateDevice(m_adapter.Get(),D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&m_device)),"D3D12CreateDevice"))return false;
+    if(wantDebug){
+        if(FAILED(m_device.As(&m_infoQueue)))m_infoQueue.Reset();
+        LOG(m_infoQueue?"D3D12 debug layer active; its messages are logged at every GPU wait.":"D3D12 debug layer unavailable (install the Windows Graphics Tools feature).");
+    }
     D3D12_COMMAND_QUEUE_DESC q{};q.Type=D3D12_COMMAND_LIST_TYPE_DIRECT;
     if(!HR(m_device->CreateCommandQueue(&q,IID_PPV_ARGS(&m_queue)),"CreateCommandQueue"))return false;
     for(uint32_t i=0;i<FrameCount;++i) {
@@ -877,6 +885,11 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
         nr.mvScaleX=nr.mvScaleY=m_nrMVScale;
         ++m_nrEvaluations;
         used=m_nr->Evaluate(cmd,m_nrColor.Get(),m_nrOut.Get(),m_renderW,m_renderH,nr);
+        // The evaluate leaves the command list with NGX's own descriptor heaps,
+        // root signature and topology (documented; the debug layer flags every
+        // later draw otherwise). Restore ours before the first pass that follows.
+        {ID3D12DescriptorHeap*postEvalHeaps[]={m_srvHeap.Get()};cmd->SetDescriptorHeaps(1,postEvalHeaps);}
+        cmd->SetGraphicsRootSignature(m_rootSig.Get());cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         Barrier(cmd,m_nrOut.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         if(m_outputInUAV)Barrier(cmd,m_dlssOutput.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_RENDER_TARGET);
         else Barrier(cmd,m_dlssOutput.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -1121,10 +1134,26 @@ void D3D12Renderer::SignalFrameSlot(uint32_t slot){
     const uint64_t v=++m_fenceValue;
     if(SUCCEEDED(m_queue->Signal(m_fence.Get(),v)))m_frameFence[slot]=v;
 }
+void D3D12Renderer::LogDebugLayerMessages(){
+    if(!m_infoQueue)return;
+    const UINT64 n=m_infoQueue->GetNumStoredMessages();
+    for(UINT64 i=0;i<n;++i){
+        SIZE_T len=0;
+        if(FAILED(m_infoQueue->GetMessage(i,nullptr,&len))||!len)continue;
+        std::vector<uint8_t> buf(len);
+        auto* m=reinterpret_cast<D3D12_MESSAGE*>(buf.data());
+        if(FAILED(m_infoQueue->GetMessage(i,m,&len)))continue;
+        if(m->Severity>D3D12_MESSAGE_SEVERITY_WARNING)continue;   // info/message noise
+        LOG("D3D12 debug layer ["<<(m->Severity==D3D12_MESSAGE_SEVERITY_WARNING?"warning":"ERROR")<<"] "<<m->pDescription);
+    }
+    m_infoQueue->ClearStoredMessages();
+}
+
 void D3D12Renderer::WaitGPU(){
     if(!m_queue||!m_fence||!m_fenceEvent)return;
     uint64_t v=++m_fenceValue;m_queue->Signal(m_fence.Get(),v);
     if(m_fence->GetCompletedValue()<v){m_fence->SetEventOnCompletion(v,m_fenceEvent);WaitForSingleObject(m_fenceEvent,INFINITE);}
+    LogDebugLayerMessages();
 }
 D3D12_CPU_DESCRIPTOR_HANDLE D3D12Renderer::RTV(uint32_t i)const{auto h=m_rtvHeap->GetCPUDescriptorHandleForHeapStart();h.ptr+=SIZE_T(i)*m_rtvInc;return h;}
 D3D12_CPU_DESCRIPTOR_HANDLE D3D12Renderer::DSV()const{return m_dsvHeap->GetCPUDescriptorHandleForHeapStart();}

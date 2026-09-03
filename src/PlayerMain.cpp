@@ -1138,7 +1138,7 @@ private:
     // sit under the picture rather than across the whole window. Every layout
     // and hit-test below derives from these three.
     LONG PanelX0(const RECT&c)const{return m_panelLeft?0:std::max<LONG>(0,c.right-SIDE_W);}
-    LONG VideoX0(const RECT&c)const{return m_panelLeft?SIDE_W:0;}
+    LONG VideoX0(const RECT&)const{return m_panelLeft?SIDE_W:0;}
     LONG VideoX1(const RECT&c)const{return m_panelLeft?c.right:std::max<LONG>(0,c.right-SIDE_W);}
 
     void Layout(){

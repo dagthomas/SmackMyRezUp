@@ -111,6 +111,10 @@ public:
     bool DLSSFeatureCreated() const { return m_nr && m_nr->FeatureReady(); }
     uint64_t DLSSEvaluations() const { return m_nrEvaluations; }
     void WaitGPU();
+    // With SMRU_D3D_DEBUG=1 in the environment: every message the D3D12 debug
+    // layer stored since the last call (barrier/state mismatches, descriptor
+    // misuse) goes to the log. A no-op otherwise.
+    void LogDebugLayerMessages();
     bool PresentCurrent();
     // Inspection zoom on the presented image (and debug views): the present pass
     // samples uv*scale+offset, so the window shows a GPU-magnified crop of the
@@ -276,6 +280,7 @@ private:
     uint64_t m_framesPresented = 0;
     bool m_exportMode = false;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_exportReadback;
+    Microsoft::WRL::ComPtr<ID3D12InfoQueue> m_infoQueue;   // set only with SMRU_D3D_DEBUG=1
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT m_exportFootprint{};
     std::vector<uint8_t> m_exportRGBA;
     DebugView m_debugView = DebugView::Final;
