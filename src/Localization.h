@@ -132,7 +132,7 @@ private:
             {L"menu.video", L"Video"}, {L"menu.aspectfit", L"Original aspect ratio (Fit)"}, {L"menu.aspectfill", L"Fill without stretching (Crop)"},
             {L"menu.final", L"Final image\t1"}, {L"menu.input", L"DLSS input\t2"}, {L"menu.mv", L"Motion vectors\t3"},
             {L"menu.depth", L"Depth\t4"}, {L"menu.mask", L"BiasCurrent mask\t5"}, {L"menu.fullscreen", L"Fullscreen\tF11"},
-            {L"menu.dlss", L"DLSS"}, {L"menu.dlss_toggle", L"Enable DLSS\tD"},
+            {L"menu.dlss", L"DLSS"}, {L"menu.dlss_toggle", L"Neural pass\tD"}, {L"menu.sr_toggle", L"DLSS Super Resolution\tU"},
             {L"menu.depthmode", L"Estimated / flat depth proxy\tG"}, {L"menu.quality", L"Mode / quality"},
             {L"menu.quality_auto", L"Auto (realtime recommended)"},
             {L"menu.language", L"Language"}, {L"menu.lang_en", L"English"}, {L"menu.lang_pt", L"Portuguese (Brazil)"},

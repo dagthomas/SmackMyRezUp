@@ -7,6 +7,7 @@
 #include <memory>
 #include <vector>
 #include "NeuralEngine.h"
+#include "SuperRes.h"
 
 class D3D12Renderer {
 public:
@@ -101,6 +102,13 @@ public:
     void SetNRPreset(uint32_t p) { NR().SetPreset(p); }
     bool DLSSAvailable() const { return m_nrLoaded; }
     bool DLSSEnabled() const { return m_dlssEnabled && m_nrLoaded; }
+    // DLSS Super Resolution: set BEFORE Initialize. Takes effect only when the
+    // output is larger than the source; the neural pass then runs at source
+    // size and SR reconstructs the output from the frame history.
+    void SetSuperRes(bool on) { m_srRequested = on; }
+    bool SuperResActive() const { return m_srActive; }
+    const char* SuperResQuality() const;
+    void SetFrameTimeMs(float ms) { m_frameTimeMs = ms; }
     uint32_t DLSSInputW() const { return m_renderW; }
     uint32_t DLSSInputH() const { return m_renderH; }
     uint32_t OutputW() const { return m_outputW; }
@@ -366,4 +374,12 @@ private:
     NeuralEngine::Settings m_nrSettings;
     uint64_t m_nrEvaluations = 0;
     bool m_nrLoaded = false;
+    // DLSS SR host, declared after the neural engine so it is destroyed first
+    // (it may share the NGX core the engine owns).
+    std::unique_ptr<SuperRes> m_sr;
+    bool m_srRequested = false, m_srActive = false;
+    float m_frameTimeMs = 1000.0f / 30.0f;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_nrLinear;   // the neural result, linear FP16, render size
+    bool m_lastProduced = false;                          // m_dlssOutput holds the last frame's picture
+    bool RecordOutput(ID3D12GraphicsCommandList* cmd, bool used, bool temporalReset, float jitterX, float jitterY);
 };

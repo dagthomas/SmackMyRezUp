@@ -28,8 +28,13 @@ if(NOT EXISTS "${DLSS_SDK}/include/nvsdk_ngx.h")
     message(FATAL_ERROR "NVIDIA DLSS SDK not found at ${DLSS_SDK}. Run build.ps1; it clones the official NVIDIA/DLSS repository automatically.")
 endif()
 set(DLSS_LIB_DIR "${DLSS_SDK}/lib/Windows_x86_64/x64")
-# nvngx_dlss.dll (DLSS SR) is neither staged nor embedded: the direct-NR
-# pipeline never creates the SR feature (upscale = resize + 1:1 neural pass).
+# nvngx_dlss.dll (DLSS Super Resolution) ships with the player: staged from the
+# SDK into payload/ (embedded by the .rc) and copied beside the build outputs.
+set(DLSS_SR_DLL "${DLSS_SDK}/lib/Windows_x86_64/rel/nvngx_dlss.dll")
+if(NOT EXISTS "${DLSS_SR_DLL}")
+    message(FATAL_ERROR "nvngx_dlss.dll not found at ${DLSS_SR_DLL}")
+endif()
+configure_file("${DLSS_SR_DLL}" "${CMAKE_SOURCE_DIR}/payload/nvngx_dlss.dll" COPYONLY)
 
 # --- Generated version header (included by src/AppIdentity.h and the .rc) ----
 set(SMRU_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
@@ -63,6 +68,7 @@ add_library(SmackMyRezUpCore STATIC
     src/VideoDecoder.cpp
     src/VideoDecoder.h
     src/NeuralEngine.cpp
+    src/SuperRes.cpp
     src/NeuralEngine.h
     src/D3D12Renderer.cpp
     src/D3D12Renderer.h
@@ -114,6 +120,9 @@ add_custom_command(TARGET SmackMyRezUpExport POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:SmackMyRezUpExport>"
         "${CMAKE_SOURCE_DIR}/payload/SmackMyRezUpExport.exe"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/payload/nvngx_dlss.dll"
+        "$<TARGET_FILE_DIR:SmackMyRezUpExport>/nvngx_dlss.dll"
 )
 
 # build.ps1 stages FFmpeg into external/ffmpeg/bin. Kept optional so CMake can

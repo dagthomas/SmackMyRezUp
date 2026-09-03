@@ -51,7 +51,7 @@ static const wchar_t* kVideoPatterns =
 enum : UINT {
     IDM_OPEN=100, IDM_EXIT,
     IDM_PLAY=200, IDM_STOP, IDM_BACK10, IDM_FWD10, IDM_MUTE,
-    IDM_DLSS=300, IDM_VIEW_FINAL, IDM_VIEW_INPUT, IDM_VIEW_MV, IDM_VIEW_DEPTH, IDM_VIEW_MASK, IDM_DEPTH_MODE,
+    IDM_DLSS=300, IDM_VIEW_FINAL, IDM_VIEW_INPUT, IDM_VIEW_MV, IDM_VIEW_DEPTH, IDM_VIEW_MASK, IDM_DEPTH_MODE, IDM_SR_TOGGLE,
     IDM_LUT_LOAD=320, IDM_LUT_CLEAR, IDM_MOTION_ZERO=324, IDM_MOTION_GLOBAL, IDM_MOTION_EST,
     IDM_FX_LUT=340, IDM_FX_SHARPEN, IDM_FX_TONE, IDM_FX_FLOW, IDM_FX_DEPTHMAP, IDM_FX_MASK, IDM_FX_BYPASS, IDM_FX_LANCZOS4K, IDM_HELP=600, IDM_PANEL_LEFT,
     IDM_NRMODEL_A=350, IDM_NRMODEL_B, IDM_NRMODEL_C, IDM_SHOT,
@@ -243,9 +243,7 @@ static bool PromptText(HWND owner,const wchar_t* title,const wchar_t* label,std:
 
 struct PayloadEntry{int id;const wchar_t* rel;bool refresh;};
 static constexpr PayloadEntry kPayload[]={
-    // 9003 (nvngx_dlss.dll, DLSS SR) was dropped: the direct-NR pipeline
-    // upscales with a resize before the 1:1 neural pass and never creates the
-    // SR feature, so the 59 MB runtime was dead weight in the exe.
+    {9003,L"nvngx_dlss.dll",false},   // DLSS Super Resolution runtime (public SDK)
     {9004,L"nvngx_dlssnr.dll",false},
     {9014,L"ffmpeg.exe",false},{9015,L"ffprobe.exe",false},{9016,smru::kExporterExeW,true},
     {9017,L"fonts\\BricolageGrotesque.ttf",true},{9018,L"fonts\\IBMPlexSans-Regular.ttf",true},
@@ -475,6 +473,7 @@ private:
         m_sharpen=std::clamp(ReadSetting(L"Sharpen",0.0f),0.0f,1.0f);
         m_postSharpen=std::clamp(ReadSetting(L"PostSharpen",0.0f),0.0f,1.0f);
         m_lanczos4K=ReadSetting(L"Lanczos4K",0.0f)>0.5f;
+        m_srUpscale=ReadSetting(L"SrUpscale",0.0f)>0.5f;
         m_lutStrength=std::clamp(ReadSetting(L"LutStrength",1.0f),0.0f,1.0f);
         m_svrStrength=std::clamp(ReadSetting(L"SvrStrength",0.7f),0.0f,1.0f);
         m_motionMode=std::clamp(int(ReadSetting(L"Motion",0.0f)),0,2);
@@ -514,6 +513,7 @@ private:
         WriteSetting(L"Sharpen",m_sharpen);
         WriteSetting(L"PostSharpen",m_postSharpen);
         WriteSetting(L"Lanczos4K",m_lanczos4K?1.0f:0.0f);
+        WriteSetting(L"SrUpscale",m_srUpscale?1.0f:0.0f);
         WriteSetting(L"LutStrength",m_lutStrength);
         WriteSetting(L"SvrStrength",m_svrStrength);
         WriteSetting(L"Motion",float(m_motionMode));
@@ -651,7 +651,7 @@ private:
         add(video,IDM_VIEW_FINAL,L"menu.final"); add(video,IDM_VIEW_INPUT,L"menu.input"); add(video,IDM_VIEW_MV,L"menu.mv"); add(video,IDM_VIEW_DEPTH,L"menu.depth"); add(video,IDM_VIEW_MASK,L"menu.mask"); AppendMenuW(video,MF_SEPARATOR,0,nullptr); add(video,IDM_FULLSCREEN,L"menu.fullscreen");
         AppendMenuW(video,MF_SEPARATOR,0,nullptr); AppendMenuW(video,MF_STRING|(m_panelLeft?MF_CHECKED:MF_UNCHECKED),IDM_PANEL_LEFT,L"Control panel on the left");
         add(quality,IDM_QUALITY_AUTO,L"menu.quality_auto"); AppendMenuW(quality,MF_STRING,IDM_QUALITY_QUALITY,L"Quality"); AppendMenuW(quality,MF_STRING,IDM_QUALITY_BALANCED,L"Balanced"); AppendMenuW(quality,MF_STRING,IDM_QUALITY_PERFORMANCE,L"Performance"); AppendMenuW(quality,MF_STRING,IDM_QUALITY_ULTRAPERF,L"Ultra Performance"); AppendMenuW(quality,MF_STRING,IDM_QUALITY_DLAA,L"DLAA");
-        add(dlss,IDM_DLSS,L"menu.dlss_toggle"); std::wstring qualityName=T(L"menu.quality"); AppendMenuW(dlss,MF_POPUP,reinterpret_cast<UINT_PTR>(quality),qualityName.c_str());
+        add(dlss,IDM_DLSS,L"menu.dlss_toggle"); add(dlss,IDM_SR_TOGGLE,L"menu.sr_toggle"); std::wstring qualityName=T(L"menu.quality"); AppendMenuW(dlss,MF_POPUP,reinterpret_cast<UINT_PTR>(quality),qualityName.c_str());
         // Effects menu: every addition individually toggleable for A/B, plus a
         // bypass-all on 'B'. Values are kept; only the application is gated.
         HMENU fx=CreatePopupMenu();
@@ -746,6 +746,7 @@ private:
         ShowWindow(m_viewport,SW_SHOW); Layout();
         m_renderer=std::make_unique<D3D12Renderer>();
         m_renderer->SetNRSettings(CurrentNRSettings());
+        m_renderer->SetSuperRes(m_srUpscale);
         if(m_flowLoaded)m_renderer->EnableExternalFlow();
         if(m_depthLoaded)m_renderer->EnableExternalDepth();
         if(m_maskLoaded)m_renderer->EnableExternalMask();
@@ -778,6 +779,7 @@ private:
         if(!m_renderer->Initialize(m_renderWnd,m_decoder.Width(),m_decoder.Height(),ow,oh,guideW,guideH)){std::wstring e=T(L"error.renderer"),cap=T(L"app.title");MessageBoxW(m_hwnd,e.c_str(),cap.c_str(),MB_ICONERROR);m_renderer.reset();m_decoder.Close();ShowWindow(m_viewport,SW_HIDE);return false;}
         m_pipeline=std::make_unique<FramePipeline>(*m_renderer);
         m_pipeline->SetPolicy({.srcW=m_decoder.Width(),.srcH=m_decoder.Height(),.fps=m_decoder.FrameRate()});
+        m_renderer->SetFrameTimeMs(float(1000.0/std::max(1.0,m_decoder.FrameRate())));
         m_pipeline->Guides().SetDepthMode(m_depthMode);
         ApplyVideoAdjustments(false);
         VideoFrame first; if(!m_decoder.ReadNext(first)){std::wstring e=T(L"error.frame"),cap=T(L"app.title");MessageBoxW(m_hwnd,e.c_str(),cap.c_str(),MB_ICONERROR);Unload();return false;}
@@ -943,7 +945,7 @@ private:
 
     void UpdateTitle(){
         if(!m_hwnd)return; if(!m_loaded||!m_renderer){SetWindowTextW(m_hwnd,T(L"app.title").c_str());return;}
-        std::wstringstream s;s<<smru::kProductNameW<<L" "<<smru::kVersionW<<L" | source "<<m_decoder.NativeWidth()<<L"x"<<m_decoder.NativeHeight();if(m_decoder.Width()!=m_decoder.NativeWidth()||m_decoder.Height()!=m_decoder.NativeHeight())s<<L" decode "<<m_decoder.Width()<<L"x"<<m_decoder.Height();s<<L" | NR "<<m_renderer->OutputW()<<L"x"<<m_renderer->OutputH()<<L" | "<<m_decoder.BackendName()<<L" | "<<(m_renderer->DLSSFeatureCreated()?L"NR ACTIVE":(m_renderer->DLSSAvailable()?L"NR READY":L"NR OFF"))<<L" | "<<m_renderer->DLSSEvaluations()<<L" frames";SetWindowTextW(m_hwnd,s.str().c_str());
+        std::wstringstream s;s<<smru::kProductNameW<<L" "<<smru::kVersionW<<L" | source "<<m_decoder.NativeWidth()<<L"x"<<m_decoder.NativeHeight();if(m_decoder.Width()!=m_decoder.NativeWidth()||m_decoder.Height()!=m_decoder.NativeHeight())s<<L" decode "<<m_decoder.Width()<<L"x"<<m_decoder.Height();s<<L" | NR "<<m_renderer->OutputW()<<L"x"<<m_renderer->OutputH()<<L" | "<<m_decoder.BackendName()<<L" | "<<(m_renderer->DLSSFeatureCreated()?L"NR ACTIVE":(m_renderer->DLSSAvailable()?L"NR READY":L"NR OFF"))<<(m_renderer->SuperResActive()?L" + DLSS SR":L"")<<L" | "<<m_renderer->DLSSEvaluations()<<L" frames";SetWindowTextW(m_hwnd,s.str().c_str());
     }
 
     // Control panel side. The panel is a full-height column on the left or the
@@ -982,18 +984,18 @@ private:
     // 38 A/B vertical split, 39 A/B horizontal split,
     // 43 GenMask (text-prompted segmentation job), 44 MaskNR (bind the mask
     // into the neural pass, A/B), 45 Reset (every look control to defaults).
-    static constexpr int kBtnCount=47;   // 46 = NR Auto Mask (was the Image adjustments window button)
+    static constexpr int kBtnCount=48;   // 46 = NR Auto Mask (was the Image adjustments window button), 47 = DLSS SR
     // (kept for reference)   // 40 = export resolution cycle, 41 = export codec cycle, 42 = save processed frame
     static constexpr int kBarOrder[8]={0, 1,2,3,4,16, 5, 11};
     static constexpr int kBarGroup[8]={0, 1,1,1,1,1,  2, 3};
-    static constexpr int kPanelG0[]={6,7,10,23,26,28,29,30,46};
+    static constexpr int kPanelG0[]={6,47,7,10,23,26,28,29,30,46};
     static constexpr int kPanelG1[]={12,13,14,15,40,41,25,42,17,9,43,34};
     static constexpr int kPanelG2[]={31,32,33};
     static constexpr int kPanelG3[]={18,19,20,22,24,21,44,27,45};
     static constexpr int kPanelG4[]={38,39,35,36,37};
     struct PanelGroup{const wchar_t* caption;const int* items;int count;};
     static constexpr PanelGroup kPanelGroups[5]={
-        {L"Picture",kPanelG0,9},{L"Export & Jobs",kPanelG1,12},
+        {L"Picture",kPanelG0,10},{L"Export & Jobs",kPanelG1,12},
         {L"Motion",kPanelG2,3},{L"Effects",kPanelG3,9},
         {L"Inspect",kPanelG4,5}};
     struct BarFrame{RECT r;const wchar_t* caption;int group;COLORREF tint;};
@@ -1083,7 +1085,7 @@ private:
     // (green), 4 Motion (teal), 5 Inspect (sand). Mirrors the group captions.
     int BtnRole(int i)const{
         switch(i){
-        case 6:case 7:case 10:case 23:case 26:case 28:case 29:case 30:case 46:return 1;
+        case 6:case 7:case 10:case 23:case 26:case 28:case 29:case 30:case 46:case 47:return 1;
         case 9:case 12:case 13:case 14:case 15:case 17:case 25:case 34:case 40:case 41:case 42:case 43:return 2;
         case 18:case 19:case 20:case 21:case 22:case 24:case 27:case 44:case 45:return 3;
         case 31:case 32:case 33:return 4;
@@ -1104,7 +1106,8 @@ private:
         case 3:return T(L"button.stop");
         case 4:return L"+10";
         case 5:return m_muted?T(L"button.sound"):T(L"button.mute");
-        case 6:return m_renderer&&m_renderer->DLSSEnabled()?L"DLSS ON":L"DLSS OFF";
+        case 6:return m_renderer&&m_renderer->DLSSEnabled()?L"Neural ON":L"Neural OFF";
+        case 47:return m_srUpscale?L"SR ON":L"SR OFF";
         case 7:return m_fill?T(L"button.crop"):T(L"button.aspect");
         case 46:return L"AutoMask";
         case 9:return m_depthMapProc?L"Depth...":L"GenDepth";
@@ -1169,6 +1172,7 @@ private:
         case 2:return m_playing;
         case 5:return m_muted;
         case 6:return m_renderer&&m_renderer->DLSSEnabled();
+        case 47:return m_srUpscale;
         case 46:return m_nrAutoMask;
         case 10:return m_renderer&&m_renderer->GetDebugView()==D3D12Renderer::DebugView::MotionVectors;
         case 23:return m_renderer&&m_renderer->GetDebugView()==D3D12Renderer::DebugView::Depth;
@@ -1326,7 +1330,8 @@ private:
         case 3:return L"Stop playback";
         case 4:return L"Forward 10 seconds";
         case 5:return L"Mute / unmute";
-        case 6:return L"Toggle the DLSS neural pass on or off";
+        case 6:return L"Neural pass (DLSS-NR) on or off. Key D.";
+        case 47:return L"DLSS Super Resolution: the neural pass runs at source size and DLSS reconstructs the output from the frame history instead of a resize. Only when the output is larger than the source. Key U.";
         case 7:return L"Aspect: fit the frame or crop-fill the window";
         case 46:return L"NR Auto Mask: the model's own character mask (A/B). The Struct and Skin levels apply only while it is on.";
         case 9:return L"Generate a Depth Anything V2 depth map (<name>_depth.mp4) beside the movie. Playback and exports attach it automatically.";
@@ -1631,7 +1636,8 @@ private:
         // Lanczos pre-scale applies to any upscaling export when the toggle is
         // on: a crisp deterministic scaler in front of the NR detail pass,
         // instead of the bilinear default.
-        if(m_lanczos4K&&(upW>m_decoder.NativeWidth()||upH>m_decoder.NativeHeight()))cmd<<L" --scaler lanczos";
+        if(m_srUpscale&&(upW>m_decoder.NativeWidth()||upH>m_decoder.NativeHeight()))cmd<<L" --scaler dlss";
+        else if(m_lanczos4K&&(upW>m_decoder.NativeWidth()||upH>m_decoder.NativeHeight()))cmd<<L" --scaler lanczos";
         if(FxNrSmooth()>0.001f)cmd<<L" --nr-smooth "<<std::fixed<<std::setprecision(2)<<FxNrSmooth();
         cmd<<L" --mv "<<(m_motionMode==0?L"zero":(m_motionMode==1?L"global":L"estimated"));
         cmd<<L" --codec "<<(m_exportCodec==2?L"av1":m_exportCodec==1?L"hevc":L"x264");
@@ -2125,6 +2131,7 @@ private:
         case 4:RequestSeek(Position()+10);break;
         case 5:ToggleMute();break;
         case 6:ToggleDLSS();break;
+        case 47:ToggleSuperRes();break;
         case 7:m_fill=!m_fill;Layout();break;
         case 46:m_nrAutoMask=!m_nrAutoMask;ApplyVideoAdjustments(true);SaveVideoSettings();break;
         case 9:StartDepthMapGen();break;
@@ -2175,6 +2182,9 @@ private:
     double SecondsFromX(int x)const{RECT r=TimelineRect();const LONG span=(r.right>r.left)?(r.right-r.left):LONG(1);double t=double(LONG(x)-r.left)/double(span);return std::clamp(t,0.0,1.0)*m_decoder.DurationSeconds();}
     void SetVolumeFromX(int x){RECT r=VolumeRect();const LONG span=(r.right>r.left)?(r.right-r.left):LONG(1);m_volume=float(std::clamp(double(LONG(x)-r.left)/double(span),0.0,1.0));m_audio.SetVolume(m_volume);InvalidateControls();}
     void ToggleMute(){m_muted=!m_muted;m_audio.SetVolume(m_muted?0.0f:m_volume);InvalidateControls();}
+    // The render size changes with it, so the renderer is rebuilt in place
+    // (the same reload the decode-quality menu uses).
+    void ToggleSuperRes(){m_srUpscale=!m_srUpscale;SaveVideoSettings();if(m_loaded)ReloadKeepingPosition();InvalidateControls();}
     // Paused: a plain re-present would keep showing whatever the LAST render
     // produced (the input, if the pass was off), so the still is rendered again
     // through the full pipeline - warm-up included - and the reset is consumed.
@@ -2489,7 +2499,7 @@ private:
         case WM_HOTKEY:HandleHotkey(int(w));return 0;
         case WM_KEYDOWN:
             if(w==VK_F1){OpenHelp();return 0;}
-            if((GetKeyState(VK_CONTROL)&0x8000)&&w=='O'){OpenFromDialog();return 0;}if(w==VK_SPACE){TogglePause();return 0;}if(w==VK_LEFT){RequestSeek(Position()-10);return 0;}if(w==VK_RIGHT){RequestSeek(Position()+10);return 0;}if(w==VK_F11){ToggleFullscreen();return 0;}if(w=='D'){ToggleDLSS();return 0;}if(w=='B'){ToggleBypass();return 0;}if(w=='G'){ToggleDepthMode();return 0;}if(w=='M'){ToggleMute();return 0;}if(w=='1'){SetDebug(D3D12Renderer::DebugView::Final);return 0;}if(w=='2'){SetDebug(D3D12Renderer::DebugView::Input);return 0;}if(w=='3'){SetDebug(D3D12Renderer::DebugView::MotionVectors);return 0;}if(w=='4'){SetDebug(D3D12Renderer::DebugView::Depth);return 0;}if(w=='5'){SetDebug(D3D12Renderer::DebugView::BiasMask);return 0;}if(w==VK_ESCAPE&&m_fullscreen){ToggleFullscreen();return 0;}break;
+            if((GetKeyState(VK_CONTROL)&0x8000)&&w=='O'){OpenFromDialog();return 0;}if(w=='U'){ToggleSuperRes();return 0;}if(w==VK_SPACE){TogglePause();return 0;}if(w==VK_LEFT){RequestSeek(Position()-10);return 0;}if(w==VK_RIGHT){RequestSeek(Position()+10);return 0;}if(w==VK_F11){ToggleFullscreen();return 0;}if(w=='D'){ToggleDLSS();return 0;}if(w=='B'){ToggleBypass();return 0;}if(w=='G'){ToggleDepthMode();return 0;}if(w=='M'){ToggleMute();return 0;}if(w=='1'){SetDebug(D3D12Renderer::DebugView::Final);return 0;}if(w=='2'){SetDebug(D3D12Renderer::DebugView::Input);return 0;}if(w=='3'){SetDebug(D3D12Renderer::DebugView::MotionVectors);return 0;}if(w=='4'){SetDebug(D3D12Renderer::DebugView::Depth);return 0;}if(w=='5'){SetDebug(D3D12Renderer::DebugView::BiasMask);return 0;}if(w==VK_ESCAPE&&m_fullscreen){ToggleFullscreen();return 0;}break;
         }
         return DefWindowProcW(h,m,w,l);
     }
@@ -2497,7 +2507,7 @@ private:
     void HandleCommand(UINT id){
         const UINT langEnd=IDM_LANG_BASE+static_cast<UINT>(m_languageCodes.size());if(id>=IDM_LANG_BASE && id<langEnd){ApplyLanguage(m_languageCodes[id-IDM_LANG_BASE]);return;}
         switch(id){
-        case IDM_OPEN:OpenFromDialog();break;case IDM_EXIT:DestroyWindow(m_hwnd);break;case IDM_PLAY:TogglePause();break;case IDM_STOP:StopPlayback();break;case IDM_BACK10:RequestSeek(Position()-10);break;case IDM_FWD10:RequestSeek(Position()+10);break;case IDM_MUTE:ToggleMute();break;case IDM_DLSS:ToggleDLSS();break;
+        case IDM_OPEN:OpenFromDialog();break;case IDM_EXIT:DestroyWindow(m_hwnd);break;case IDM_PLAY:TogglePause();break;case IDM_STOP:StopPlayback();break;case IDM_BACK10:RequestSeek(Position()-10);break;case IDM_FWD10:RequestSeek(Position()+10);break;case IDM_MUTE:ToggleMute();break;case IDM_DLSS:ToggleDLSS();break;case IDM_SR_TOGGLE:ToggleSuperRes();break;
         case IDM_QUALITY_AUTO:SetDecodeScale(true,DecodeScale::Quality);break;case IDM_QUALITY_QUALITY:SetDecodeScale(false,DecodeScale::Quality);break;case IDM_QUALITY_BALANCED:SetDecodeScale(false,DecodeScale::Balanced);break;case IDM_QUALITY_PERFORMANCE:SetDecodeScale(false,DecodeScale::Performance);break;case IDM_QUALITY_ULTRAPERF:SetDecodeScale(false,DecodeScale::UltraPerformance);break;case IDM_QUALITY_DLAA:SetDecodeScale(false,DecodeScale::Native);break;
         case IDM_FX_BYPASS:ToggleBypass();break;
         case IDM_FX_LUT:m_fxLut=!m_fxLut;FxChanged();break;
@@ -2548,6 +2558,7 @@ private:
     bool m_loop=true;
     float m_toneMix=0.0f,m_sharpen=0.0f,m_postSharpen=0.0f,m_lutStrength=1.0f,m_svrStrength=0.7f,m_nrSmooth=0.0f;int m_motionMode=0;std::wstring m_lutPath;bool m_lutLoaded=false;   // the preview actually applied m_lutPath
     bool m_fxLut=true,m_fxSharpen=true,m_fxTone=true,m_fxFlow=true,m_fxDepth=true,m_bypassFX=false,m_lanczos4K=false;
+    bool m_srUpscale=false;   // DLSS Super Resolution upscale (SrUpscale in the ini)
     int m_nrModelPick=-1;VideoFrame m_lastFrame;
     // Inspection zoom (uv-space center + scale; 1 = off). Right-drag a rect on
     // the video to zoom in, left-drag pans, Ctrl+wheel zooms at the cursor,

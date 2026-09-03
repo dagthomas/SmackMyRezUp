@@ -18,7 +18,7 @@ Key measured facts baked into the defaults:
 
 - The NR runtime consumes **`DLSSNR.MVec`** — binding it (zero vectors, scale −1) removes most temporal jitter while keeping the full neural effect. `DLSSNR.ControlMask` is off by default (guide bit `mask` binds it; white = process here, and merely binding it changes the output more than the mask's content does, so A/B against an all-white mask, never against unbound); `DLSSNR.Depth` is currently ignored by the runtime but stays wired for newer builds.
 - The runtime exposes exactly one `ControlMask` and one set of `Intensity` / `LocalStructureStrength` / `LocalToneStrength` / `SkinStructureStrength` scalars per evaluate, plus `UseAutoMask` for the model's own character mask. NVIDIA's per-object "developer masking" (several named groups, each with its own structure and tone) is therefore an integration pattern on top of this interface (several evaluates, or a weight-valued mask), not extra inputs.
-- Upscaling never uses DLSS Super Resolution: it is a deterministic resize followed by the neural detail pass, so `nvngx_dlss.dll` is not needed or shipped.
+- Upscaling is a deterministic resize followed by the neural detail pass at 1:1 by default. With **DLSS SR** on (the `SR` button, key `U`, `--scaler dlss`), the neural pass runs at source size and DLSS Super Resolution reconstructs the output from the frame history using the same motion vectors, depth and mask - `nvngx_dlss.dll` from the public SDK ships with the player for it.
 
 ## Features
 
@@ -40,7 +40,7 @@ SmackMyRezUpExport --input movie.mp4 --export out.mp4 --output-size 3840x2160 ^
     --tone preserve --tone-mix 0.7 --codec hevc --nr-structure 1.0
 ```
 
-Notable flags: `--mv zero|global|estimated`, `--nr-guides off|on|all|mv,depth,mask`, `--nr-mvscale`, `--nr-smooth`, `--flow-video`, `--depth-video`, `--mask-video` (with `--nr-mask-mode bias|white|inv`), `--scaler lanczos`, `--codec x264|hevc|av1`, `--bits 16`, `--raw` (stdin/stdout frame piping), `--serve` (persistent batch server; it greets the host with `SMRU-SERVE 1`). Run with no arguments for the full list. Progress and diagnostics go to stderr as `[smru] ...` lines; the player's progress bar reads `[smru] frame N`.
+Notable flags: `--mv zero|global|estimated`, `--nr-guides off|on|all|mv,depth,mask`, `--nr-mvscale`, `--nr-smooth`, `--flow-video`, `--depth-video`, `--mask-video` (with `--nr-mask-mode bias|white|inv`), `--scaler bilinear|dlss|lanczos`, `--codec x264|hevc|av1`, `--bits 16`, `--raw` (stdin/stdout frame piping), `--serve` (persistent batch server; it greets the host with `SMRU-SERVE 1`). Run with no arguments for the full list. Progress and diagnostics go to stderr as `[smru] ...` lines; the player's progress bar reads `[smru] frame N`.
 
 ## Building
 

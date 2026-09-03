@@ -25,6 +25,13 @@ implemented here from scratch. An earlier revision vendored files from
 Kim2091/Vapourkit (GPL-3.0) for this; they have been fully removed and replaced
 by this independent implementation.
 
+## DLSS Super Resolution runtime (nvngx_dlss.dll)
+
+`nvngx_dlss.dll` is the DLSS Super Resolution runtime from the public NVIDIA DLSS
+SDK (`external/DLSS/lib/Windows_x86_64/rel`). It is embedded in the player and
+extracted beside it, and is redistributed under the terms of that SDK's license
+(`external/DLSS/LICENSE.txt`). It is only loaded when the SR upscale is on.
+
 ## DLSS-NR runtime (nvngx_dlssnr.dll)
 
 `nvngx_dlssnr.dll` (the neural-rendering runtime the engine loads at run time) is

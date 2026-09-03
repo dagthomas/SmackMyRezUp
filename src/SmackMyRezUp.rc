@@ -8,6 +8,7 @@
 #define SMRU_RC_ORIGINAL_FILENAME "SmackMyRezUp.exe"
 #include "VersionInfo.rc"
 
+9003 RCDATA "../payload/nvngx_dlss.dll"
 9004 RCDATA "../payload/nvngx_dlssnr.dll"
 9014 RCDATA "../payload/ffmpeg.exe"
 9015 RCDATA "../payload/ffprobe.exe"

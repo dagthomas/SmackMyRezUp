@@ -115,7 +115,9 @@ struct Options {
                                       // cannot restore acutance lost inside the pass
     bool lanczosScale = false;        // --scaler lanczos (file mode with --output-size):
                                       // CPU Lanczos3 upscale first, then a DLAA detail
-                                      // pass at full output res - instead of DLSS SR
+                                      // pass at full output res
+    bool srUpscale = false;           // --scaler dlss: DLSS Super Resolution AFTER the
+                                      // neural pass, which then runs at source size
                                       // doing the scaling (which can read as soft)
     bool serveMode = false;           // --serve: persistent stdin/stdout batch server
                                       // (see RunServe) so hosts pay the NR arming wait
@@ -200,9 +202,10 @@ L"                     frames (W*H*8 bytes) - float sources reach DLSS without\n
 L"                     an 8-bit quantize. Output frames stay RGBA8.\n"
 L"  --post-sharpen X   0..1 clamped unsharp on the NEURAL OUTPUT (the NR models\n"
 L"                     denoise while redrawing; try 0.3-0.6 for a blurry result)\n"
-L"  --scaler MODE      dlss (default) | lanczos: with --output-size in file\n"
-L"                     mode, lanczos upscales on the CPU first and runs a DLAA\n"
-L"                     detail pass at full res instead of DLSS SR scaling\n"
+L"  --scaler MODE      bilinear (default) | dlss | lanczos: how --output-size is\n"
+L"                     reached. dlss = DLSS Super Resolution AFTER the neural\n"
+L"                     pass (which then runs at source size); lanczos = CPU\n"
+L"                     Lanczos3 first, then the neural pass at full res\n"
 L"  --serve            persistent batch server on stdin/stdout (for hosts like\n"
 L"                     ComfyUI): pays the NR arming wait once per process\n"
 L"  --dlss on|off      off = skip the neural pass (the player's DLSS OFF look):\n"
@@ -364,9 +367,10 @@ Options ParseArgs() {
         }
         else if (a == L"--scaler") {
             const std::wstring v = lowerNext();
-            if (v == L"dlss") o.lanczosScale = false;
-            else if (v == L"lanczos") o.lanczosScale = true;
-            else badValue(L"dlss|lanczos");
+            if (v == L"bilinear") { o.lanczosScale = false; o.srUpscale = false; }
+            else if (v == L"dlss") { o.srUpscale = true; o.lanczosScale = false; }
+            else if (v == L"lanczos") { o.lanczosScale = true; o.srUpscale = false; }
+            else badValue(L"bilinear|dlss|lanczos");
         }
         else if (a == L"--nr-mask-mode") {
             const std::wstring v = lowerNext();
@@ -627,7 +631,11 @@ struct Pipeline {
             }
         }
         // Direct NR runs 1:1 at output resolution - an upscale is a bilinear (or
-        // --scaler lanczos) resize first, then the neural pass over every output pixel.
+        // --scaler lanczos) resize first, then the neural pass over every output
+        // pixel. With --scaler dlss the neural pass runs at source size instead
+        // and DLSS Super Resolution reconstructs the output afterwards.
+        renderer.SetSuperRes(o.srUpscale);
+        renderer.SetFrameTimeMs(float(1000.0 / std::max(1.0, fps)));
         renderer.SetNRSettings({.style = o.nrStyle, .intensity = o.nrIntensity,
                                 .localStructure = o.nrStructure, .skinStructure = o.nrSkin,
                                 .autoMask = o.nrAutoMask});
@@ -658,9 +666,10 @@ struct Pipeline {
         renderer.SetToneMix(o.tonePreserve ? o.toneMix : 0.0f);
         fprintf(stderr, SMRU_LOG_TAG " engine=direct style=%u intensity=%.2f structure=%.2f skin=%.2f automask=%s\n",
                 o.nrStyle, o.nrIntensity, o.nrStructure, o.nrSkin, o.nrAutoMask ? "on" : "off");
-        fprintf(stderr, SMRU_LOG_TAG " init %ux%u -> %ux%u @ %.3f fps, jitter=%s, dlss_input=%ux%u, guides=%ux%u\n",
+        fprintf(stderr, SMRU_LOG_TAG " init %ux%u -> %ux%u @ %.3f fps, jitter=%s, dlss_input=%ux%u, guides=%ux%u, sr=%s\n",
                 srcW, srcH, renderer.OutputW(), renderer.OutputH(), fps,
-                JitterName(o.jitter), renderer.DLSSInputW(), renderer.DLSSInputH(), grid.first, grid.second);
+                JitterName(o.jitter), renderer.DLSSInputW(), renderer.DLSSInputH(), grid.first, grid.second,
+                renderer.SuperResActive() ? renderer.SuperResQuality() : "off");
         fprintf(stderr, SMRU_LOG_TAG " guides: nr-bind=%u flow=%s mv=%s temporal=%s cut-reset=%s(warmup %d) tone=%s(mix %.2f) sharpen=%.2f post-sharpen=%.2f bits=%d\n",
                 o.nrGuides,
                 o.flowFine ? "fine" : "fast",

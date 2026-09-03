@@ -1,5 +1,6 @@
 #include "D3D12Renderer.h"
 #include "Log.h"
+#include "SuperRes.h"
 #include <d3dcompiler.h>
 #include <d3d12sdklayers.h>
 #include <vector>
@@ -46,7 +47,7 @@ bool D3D12Renderer::Initialize(HWND hwnd,uint32_t sourceW,uint32_t sourceH,uint3
     m_hwnd=hwnd; m_sourceW=sourceW; m_sourceH=sourceH; m_outputW=outputW; m_outputH=outputH; m_gridW=gridW; m_gridH=gridH;
     if(!m_gridW||!m_gridH)return false;
     if(!CreateDeviceAndSwapchain(hwnd) || !CreateHeapsAndBackbuffers() || !CreatePipelines()) return false;
-    if(!InitializeDLSS()) {
+    if(!InitializeDLSS() && !m_srActive) {
         LOG("DLSS unavailable; using D3D12 scaler fallback.");
         m_renderW=std::max(1u,outputW*2u/3u); m_renderH=std::max(1u,outputH*2u/3u);
     }
@@ -98,10 +99,10 @@ bool D3D12Renderer::CreateDeviceAndSwapchain(HWND hwnd) {
 }
 
 bool D3D12Renderer::CreateHeapsAndBackbuffers(){
-    D3D12_DESCRIPTOR_HEAP_DESC rh{};rh.Type=D3D12_DESCRIPTOR_HEAP_TYPE_RTV;rh.NumDescriptors=FrameCount+11; // +7 = zero MV texture, +8..+10 = NR Smooth output + delta pair
+    D3D12_DESCRIPTOR_HEAP_DESC rh{};rh.Type=D3D12_DESCRIPTOR_HEAP_TYPE_RTV;rh.NumDescriptors=FrameCount+12; // +7 = zero MV texture, +8..+10 = NR Smooth output + delta pair, +11 = neural result (render size)
     if(!HR(m_device->CreateDescriptorHeap(&rh,IID_PPV_ARGS(&m_rtvHeap)),"Create RTV heap"))return false;m_rtvInc=m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     for(uint32_t i=0;i<FrameCount;++i){if(!HR(m_swapchain->GetBuffer(i,IID_PPV_ARGS(&m_backbuffers[i])),"Get backbuffer"))return false;m_device->CreateRenderTargetView(m_backbuffers[i].Get(),nullptr,RTV(i));}
-    D3D12_DESCRIPTOR_HEAP_DESC sh{};sh.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;sh.NumDescriptors=26;sh.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // slot 16 = overlay label atlas, 17 = decoded source alias for the A/B "pure original" side, 18..25 = the two NR Smooth t1..t4 tables
+    D3D12_DESCRIPTOR_HEAP_DESC sh{};sh.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;sh.NumDescriptors=27;sh.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE; // slot 16 = overlay label atlas, 17 = decoded source alias for the A/B "pure original" side, 18..25 = the two NR Smooth t1..t4 tables, 26 = neural result (render size)
     if(!HR(m_device->CreateDescriptorHeap(&sh,IID_PPV_ARGS(&m_srvHeap)),"Create SRV heap"))return false;
     m_srvInc=m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     D3D12_DESCRIPTOR_HEAP_DESC dh{};dh.Type=D3D12_DESCRIPTOR_HEAP_TYPE_DSV;dh.NumDescriptors=1;
@@ -423,6 +424,21 @@ bool D3D12Renderer::InitializeDLSS(){
     const bool ok=NR().Load(m_device.Get());
     m_nrLoaded=ok;
     if(ok){m_renderW=m_outputW;m_renderH=m_outputH;}   // NR is 1:1, no upscale
+    // DLSS Super Resolution: only when asked for and the output is larger than
+    // the source. The neural pass then runs at SOURCE size and SR reconstructs
+    // the output from the frame history (same MVs, depth and mask). Created on
+    // the list the NR load uses, so it is flushed before its first evaluate.
+    m_srActive=false;
+    if(m_srRequested&&(m_outputW>m_sourceW||m_outputH>m_sourceH)){
+        if(!m_sr)m_sr=std::make_unique<SuperRes>();
+        const bool loaded=m_sr->Available()||m_sr->Load(m_device.Get(),NR().CoreInitialised());
+        if(loaded&&m_sr->EnsureFeature(cmd,m_sourceW,m_sourceH,m_outputW,m_outputH)){
+            // The SR host may have nudged the source into a mode's input range;
+            // the convert pass resizes to whatever it chose.
+            m_renderW=m_sr->RenderW();m_renderH=m_sr->RenderH();m_srActive=true;
+            LOG("DLSS SR active: neural pass at "<<m_renderW<<"x"<<m_renderH<<" (source "<<m_sourceW<<"x"<<m_sourceH<<"), SR to "<<m_outputW<<"x"<<m_outputH<<" ("<<m_sr->QualityName()<<")");
+        } else LOG("DLSS SR requested but unavailable for "<<m_sourceW<<"x"<<m_sourceH<<" -> "<<m_outputW<<"x"<<m_outputH<<"; upscaling with the resize instead.");
+    }
     cmd->Close();ID3D12CommandList*l[]={cmd};m_queue->ExecuteCommandLists(1,l);WaitGPU();return ok;
 }
 
@@ -519,6 +535,13 @@ bool D3D12Renderer::CreateVideoResources(){
         if(!HR(m_device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&nro,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,nullptr,IID_PPV_ARGS(&m_nrOut)),"Create NR out"))return false;
         m_nrOut->SetName(L"NR_Output_sRGBEncoded_FP16_UAV");
         srv.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;m_device->CreateShaderResourceView(m_nrOut.Get(),&srv,SRVCPU(15));
+        // The neural result decoded back to linear, at render size: what the
+        // smoother works on and what the output stage (SR or a copy) reads.
+        auto nrl=Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT,m_renderW,m_renderH,D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        if(!HR(m_device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&nrl,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,nullptr,IID_PPV_ARGS(&m_nrLinear)),"Create NR linear"))return false;
+        m_nrLinear->SetName(L"NR_Result_Linear_FP16");
+        m_device->CreateShaderResourceView(m_nrLinear.Get(),&srv,SRVCPU(26));
+        m_device->CreateRenderTargetView(m_nrLinear.Get(),nullptr,RTV(FrameCount+11));
     }
 
     if(m_useExtDepth){
@@ -553,11 +576,11 @@ bool D3D12Renderer::CreateVideoResources(){
     m_device->CreateShaderResourceView(m_dlssColor.Get(),&srv,SRVCPU(12));
     m_device->CreateShaderResourceView(m_dlssColor.Get(),&srv,SRVCPU(13));
     m_device->CreateShaderResourceView(m_dlssColor.Get(),&srv,SRVCPU(14));
-    // NR Smooth: the smoothed picture (copied back over m_dlssOutput so every
-    // later pass keeps reading the one texture) and a ping-pong pair carrying
-    // last frame's smoothed NR delta. One t1..t4 table per "previous" delta:
-    // t2 = NR input, t3 = previous delta, t4 = motion vectors (t1 kept valid).
-    auto smoothDesc=Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT,m_outputW,m_outputH,D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    // NR Smooth: the smoothed picture (copied back over the neural result so
+    // the output stage reads the one texture) and a ping-pong pair carrying
+    // last frame's smoothed NR delta, all at render size. One t1..t4 table per
+    // "previous" delta: t2 = NR input, t3 = previous delta, t4 = motion vectors.
+    auto smoothDesc=Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT,m_renderW,m_renderH,D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
     if(!HR(m_device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&smoothDesc,D3D12_RESOURCE_STATE_RENDER_TARGET,nullptr,IID_PPV_ARGS(&m_smoothOut)),"Create NR Smooth output"))return false;
     m_smoothOut->SetName(L"NRSmooth_Output_Linear_FP16");
     m_device->CreateRenderTargetView(m_smoothOut.Get(),nullptr,RTV(FrameCount+8));
@@ -891,25 +914,29 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
         {ID3D12DescriptorHeap*postEvalHeaps[]={m_srvHeap.Get()};cmd->SetDescriptorHeaps(1,postEvalHeaps);}
         cmd->SetGraphicsRootSignature(m_rootSig.Get());cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         Barrier(cmd,m_nrOut.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        if(m_outputInUAV)Barrier(cmd,m_dlssOutput.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_RENDER_TARGET);
-        else Barrier(cmd,m_dlssOutput.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET);
-        D3D12_VIEWPORT fvp{0,0,float(m_outputW),float(m_outputH),0,1};D3D12_RECT fsc{0,0,LONG(m_outputW),LONG(m_outputH)};
-        cmd->RSSetViewports(1,&fvp);cmd->RSSetScissorRects(1,&fsc);
-        auto ort=RTV(FrameCount+6);cmd->OMSetRenderTargets(1,&ort,FALSE,nullptr);
+        // Decode the result back to linear at render size; the output stage
+        // below takes it to the output size (DLSS SR, or a copy at 1:1).
+        Barrier(cmd,m_nrLinear.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET);
+        cmd->RSSetViewports(1,&nvp);cmd->RSSetScissorRects(1,&nsc);
+        auto ort=RTV(FrameCount+11);cmd->OMSetRenderTargets(1,&ort,FALSE,nullptr);
         cmd->SetPipelineState(m_psoFromSRGB.Get());cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(15));cmd->DrawInstanced(3,1,0,0);
-        Barrier(cmd,m_dlssOutput.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        m_outputInUAV=false;
+        Barrier(cmd,m_nrLinear.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     }
 
     m_lastDLSSUsed=used;
     RecordNRSmooth(cmd,used,temporalReset);
+    // Output stage: DLSS SR reconstructs the output size from the neural result
+    // (or from the plain input with the neural pass off); without SR the render
+    // size IS the output size and the result is handed over as it is.
+    const bool produced=RecordOutput(cmd,used,temporalReset,sampleJX,sampleJY);
+    m_lastProduced=produced;
     // A/B compare separator: shows the NR input (before) against the full pipeline
     // (after) split by a draggable line. Takes over the Final present, so tone
     // preserve steps aside while it is active. Never in export.
-    const bool compareOn=!m_exportMode&&m_compareMode>0&&m_debugView==DebugView::Final&&used;
+    const bool compareOn=!m_exportMode&&m_compareMode>0&&m_debugView==DebugView::Final&&produced;
     // Live tone-preserve: render the low-frequency pair, then present through the
     // recombine shader. Only meaningful when the DLSS/NR output was produced.
-    const bool toneActive=used&&!compareOn&&m_toneMix>0.0f&&m_debugView==DebugView::Final&&m_psoPresentTone&&m_lowRef;
+    const bool toneActive=used&&produced&&!compareOn&&m_toneMix>0.0f&&m_debugView==DebugView::Final&&m_psoPresentTone&&m_lowRef;
     if(toneActive){
         if(!m_lowInRT){Barrier(cmd,m_lowRef.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET);Barrier(cmd,m_lowOut.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET);}
         m_lowInRT=true;
@@ -962,7 +989,7 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
                 cmd->SetGraphicsRootDescriptorTable(2,SRVGPU(8)); // t2=lowRef, t3=lowOut, t4=full-res ref
             } else {
                 cmd->SetPipelineState(m_psoPresent.Get());
-                if(used)cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(1));
+                if(produced)cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(1));
                 else{debugPixelResource=m_dlssColor.Get();cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(4));}
             }
             break;
@@ -1013,11 +1040,11 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
     return true;
 }
 
-// NR Smooth (PSSmooth): runs once the NR output is linear in m_dlssOutput,
-// writes the smoothed picture plus this frame's delta, then copies the picture
-// back over m_dlssOutput so tone-preserve, the export readback and the present
-// pass all keep reading the one texture. History lives in the delta pair and is
-// dropped on a temporal reset, when the pass is off, or when NR did not run.
+// NR Smooth (PSSmooth): runs once the NR output is linear in m_nrLinear
+// (render size), writes the smoothed picture plus this frame's delta, then
+// copies the picture back over m_nrLinear for the output stage. History lives
+// in the delta pair and is dropped on a temporal reset, when the pass is off,
+// or when NR did not run.
 void D3D12Renderer::RecordNRSmooth(ID3D12GraphicsCommandList*cmd,bool used,bool temporalReset){
     if(!used||!m_smoothOut||!m_psoSmooth||m_nrSmooth<=0.001f){m_smoothHasHistory=false;return;}
     const bool history=m_smoothHasHistory&&!temporalReset;
@@ -1025,28 +1052,28 @@ void D3D12Renderer::RecordNRSmooth(ID3D12GraphicsCommandList*cmd,bool used,bool 
     Barrier(cmd,m_dlssColor.Get(),GuideReadState,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     Barrier(cmd,m_motion.Get(),GuideReadState,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     Barrier(cmd,m_smoothDelta[cur].Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET);
-    D3D12_VIEWPORT vp{0,0,float(m_outputW),float(m_outputH),0,1};D3D12_RECT sc{0,0,LONG(m_outputW),LONG(m_outputH)};
+    D3D12_VIEWPORT vp{0,0,float(m_renderW),float(m_renderH),0,1};D3D12_RECT sc{0,0,LONG(m_renderW),LONG(m_renderH)};
     cmd->RSSetViewports(1,&vp);cmd->RSSetScissorRects(1,&sc);
     D3D12_CPU_DESCRIPTOR_HANDLE rts[2]={RTV(FrameCount+8),RTV(FrameCount+9+cur)};
     cmd->OMSetRenderTargets(2,rts,FALSE,nullptr);
     cmd->SetGraphicsRootSignature(m_rootSig.Get());cmd->SetPipelineState(m_psoSmooth.Get());
     cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     // Misc.y = history valid; ColorA = keep, outlier threshold (48/255, the
-    // tuning of the original CPU pass), MV scale DLSS-input -> output pixels.
+    // tuning of the original CPU pass), MV scale (everything is render size).
     const float params[16]={0,0, 0,history?1.0f:0.0f,
-                            m_nrSmooth,48.0f/255.0f,float(m_outputW)/float(std::max(1u,m_renderW)),float(m_outputH)/float(std::max(1u,m_renderH)),
+                            m_nrSmooth,48.0f/255.0f,1.0f,1.0f,
                             0,0,0,0, 0,0,0,0};
     cmd->SetGraphicsRoot32BitConstants(1,16,params,0);
-    cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(1));           // t0 = NR output
+    cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(26));          // t0 = the neural result
     cmd->SetGraphicsRootDescriptorTable(2,SRVGPU(18+prev*4));   // t2..t4: input, previous delta, MVs
     cmd->DrawInstanced(3,1,0,0);
     Barrier(cmd,m_smoothDelta[cur].Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     Barrier(cmd,m_motion.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,GuideReadState);
     Barrier(cmd,m_dlssColor.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,GuideReadState);
     Barrier(cmd,m_smoothOut.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE);
-    Barrier(cmd,m_dlssOutput.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_DEST);
-    cmd->CopyResource(m_dlssOutput.Get(),m_smoothOut.Get());
-    Barrier(cmd,m_dlssOutput.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    Barrier(cmd,m_nrLinear.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_DEST);
+    cmd->CopyResource(m_nrLinear.Get(),m_smoothOut.Get());
+    Barrier(cmd,m_nrLinear.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     Barrier(cmd,m_smoothOut.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET);
     m_smoothCur=prev;
     m_smoothHasHistory=true;
@@ -1072,8 +1099,8 @@ bool D3D12Renderer::PresentCurrent(){
 
     const bool applyColor=(m_debugView==DebugView::Final);
     const ColorSettings cs=applyColor?m_colorSettings:ColorSettings{};
-    const bool compareOn=!m_exportMode&&m_compareMode>0&&m_debugView==DebugView::Final&&m_lastDLSSUsed&&DLSSEnabled();
-    const bool toneActive=m_lastDLSSUsed&&DLSSEnabled()&&!compareOn&&m_toneMix>0.0f&&m_debugView==DebugView::Final&&m_psoPresentTone&&m_lowRef&&!m_lowInRT;
+    const bool compareOn=!m_exportMode&&m_compareMode>0&&m_debugView==DebugView::Final&&m_lastProduced;
+    const bool toneActive=m_lastDLSSUsed&&m_lastProduced&&!compareOn&&m_toneMix>0.0f&&m_debugView==DebugView::Final&&m_psoPresentTone&&m_lowRef&&!m_lowInRT;
     const float zs=m_exportMode?1.0f:m_zoomScale;
     const float zx=std::clamp(m_zoomCX-zs*0.5f,0.0f,1.0f-zs);
     const float zy=std::clamp(m_zoomCY-zs*0.5f,0.0f,1.0f-zs);
@@ -1101,7 +1128,7 @@ bool D3D12Renderer::PresentCurrent(){
                 cmd->SetGraphicsRootDescriptorTable(2,SRVGPU(8));
             } else {
                 cmd->SetPipelineState(m_psoPresent.Get());
-                if(m_lastDLSSUsed&&DLSSEnabled())cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(1));
+                if(m_lastProduced)cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(1));
                 else{debugPixelResource=m_dlssColor.Get();cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(4));}
             }
             break;
@@ -1134,6 +1161,46 @@ void D3D12Renderer::SignalFrameSlot(uint32_t slot){
     const uint64_t v=++m_fenceValue;
     if(SUCCEEDED(m_queue->Signal(m_fence.Get(),v)))m_frameFence[slot]=v;
 }
+// Output stage. With DLSS SR the neural result (or the plain input, with the
+// neural pass off) at render size is reconstructed to the output size; the SR
+// runtime reads the guides in the states the neural pass gets them in. Without
+// SR, render == output and the picture is copied over. False = m_dlssOutput
+// holds nothing for this frame and the present shows the render-size input.
+bool D3D12Renderer::RecordOutput(ID3D12GraphicsCommandList*cmd,bool used,bool temporalReset,float jitterX,float jitterY){
+    if(m_srActive&&m_sr&&m_sr->FeatureReady()){
+        if(used)Barrier(cmd,m_nrLinear.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        if(!m_outputInUAV)Barrier(cmd,m_dlssOutput.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        SuperRes::Inputs in;
+        in.color=used?m_nrLinear.Get():m_dlssColor.Get();
+        in.output=m_dlssOutput.Get();in.depth=m_depth.Get();
+        // Always the measured field: SR needs real motion to accumulate history
+        // (Motion = Zero is a neural-pass measure, honoured at the NR bind only).
+        in.motion=m_motion.Get();in.bias=m_biasCurrent.Get();
+        // The convert pass sampled the source at +j: matched reports the offset
+        // DLSS has to undo (-j), legacy the historical wrong sign, zero nothing.
+        const float sgn=m_jitterMode==JitterMode::Matched?-1.0f:(m_jitterMode==JitterMode::Legacy?1.0f:0.0f);
+        in.jitterX=sgn*jitterX;in.jitterY=sgn*jitterY;
+        in.frameTimeMs=m_frameTimeMs;in.reset=temporalReset;
+        const bool ok=m_sr->Evaluate(cmd,in);
+        {ID3D12DescriptorHeap*heaps[]={m_srvHeap.Get()};cmd->SetDescriptorHeaps(1,heaps);}
+        cmd->SetGraphicsRootSignature(m_rootSig.Get());cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        if(used)Barrier(cmd,m_nrLinear.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Barrier(cmd,m_dlssOutput.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        m_outputInUAV=false;
+        return ok;
+    }
+    if(!used)return false;
+    Barrier(cmd,m_nrLinear.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Barrier(cmd,m_dlssOutput.Get(),m_outputInUAV?D3D12_RESOURCE_STATE_UNORDERED_ACCESS:D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_DEST);
+    cmd->CopyResource(m_dlssOutput.Get(),m_nrLinear.Get());
+    Barrier(cmd,m_dlssOutput.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    Barrier(cmd,m_nrLinear.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    m_outputInUAV=false;
+    return true;
+}
+
+const char* D3D12Renderer::SuperResQuality()const{return m_srActive&&m_sr?m_sr->QualityName():"";}
+
 void D3D12Renderer::LogDebugLayerMessages(){
     if(!m_infoQueue)return;
     const UINT64 n=m_infoQueue->GetNumStoredMessages();

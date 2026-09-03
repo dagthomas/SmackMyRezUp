@@ -58,6 +58,9 @@ public:
     // the first Evaluate). Cheap no-op once created at (w,h).
     bool EnsureFeature(ID3D12GraphicsCommandList* cmd, uint32_t w, uint32_t h);
     bool FeatureReady() const { return m_feature != nullptr; }
+    // True once the driver-core NGX session exists for this device (Load did
+    // it, and the destructor shuts it down): other features can share it.
+    bool CoreInitialised() const { return m_coreInit; }
 
     // Records one evaluation. colour/output must be the feature size (w,h).
     bool Evaluate(ID3D12GraphicsCommandList* cmd,

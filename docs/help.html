@@ -119,7 +119,8 @@
 
   <div class="group g-pic"><h3>Picture</h3>
     <dl>
-      <dt>DLSS ON / OFF</dt><dd>Enables the neural pass (<kbd>D</kbd>). Off shows the plain resized source.</dd>
+      <dt>Neural ON / OFF</dt><dd>The neural pass (<kbd>D</kbd>). Off shows the plain resized source.</dd>
+      <dt>SR ON / OFF</dt><dd>DLSS Super Resolution (<kbd>U</kbd>): the neural pass runs at source size and DLSS reconstructs the output from the frame history instead of a resize. Only does anything when the output is larger than the source; switching it rebuilds the renderer at the current position. Exports follow it (<code>--scaler dlss</code>).</dd>
       <dt>Aspect</dt><dd>Fit (letterboxed) or Fill (cropped, never stretched).</dd>
       <dt>AutoMask</dt><dd>The neural model's own character mask (A/B toggle). The Struct and Skin levels apply only while it is on.</dd>
       <dt>MV · Depth · Mask</dt><dd>Debug views of the three guides as the runtime receives them: the motion-vector field (hue = direction), the depth guide, and the ControlMask / bias plane. Keys <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd>; <kbd>1</kbd> final image, <kbd>2</kbd> DLSS input.</dd>
@@ -204,7 +205,7 @@
     <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>Seek −10 s / +10 s</td><td><kbd>B</kbd></td><td>Bypass all effects</td></tr>
     <tr><td><kbd>M</kbd></td><td>Mute</td><td><kbd>G</kbd></td><td>Estimated / flat depth proxy</td></tr>
     <tr><td><kbd>F11</kbd> <kbd>Esc</kbd></td><td>Fullscreen / leave it</td><td><kbd>1</kbd>–<kbd>5</kbd></td><td>Final · Input · MV · Depth · Mask views</td></tr>
-    <tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Open a file</td><td></td><td></td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Open a file</td><td><kbd>U</kbd></td><td>DLSS Super Resolution on/off</td></tr>
     <tr><td><kbd>Ctrl</kbd>+wheel</td><td>Zoom the picture</td><td><kbd>F1</kbd></td><td>This manual</td></tr>
   </table></div>
   <p>Global hotkeys (work while another app such as ReShade has focus): <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Space</kbd> play/pause, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> seek, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd> mute, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>D</kbd> DLSS, and the keyboard's media play/pause key. Drag &amp; drop a video or image onto the window to open it.</p>
