@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <thread>
+#include <vector>
 
 void TemporalGuideGenerator::Reset() {
     m_prevLuma.clear();
@@ -61,6 +63,29 @@ void TemporalGuideGenerator::DownsampleLuma(const uint8_t* bgra, uint32_t w, uin
             out[size_t(gy) * gw + gx] = s * 0.25f;
         }
     }
+}
+
+// Runs body(y) for y = first, first+step, ... < end across the hardware threads,
+// rows interleaved so a busy region is shared instead of landing on one thread.
+// Callers write only their own rows, so no synchronisation is needed. Small
+// jobs (the realtime grid at a low row count) stay on the calling thread.
+template <class F>
+static void ParallelRows(int first, int end, int step, F body) {
+    const int rows = end > first ? (end - first + step - 1) / step : 0;
+    unsigned n = std::thread::hardware_concurrency();
+    n = std::clamp<unsigned>(n ? n : 1u, 1u, 16u);
+    if (rows < 8 || n == 1) {
+        for (int y = first; y < end; y += step) body(y);
+        return;
+    }
+    auto worker = [&](unsigned t) {
+        for (int y = first + int(t) * step; y < end; y += int(n) * step) body(y);
+    };
+    std::vector<std::thread> pool;
+    pool.reserve(n - 1);
+    for (unsigned t = 1; t < n; ++t) pool.emplace_back(worker, t);
+    worker(0);
+    for (auto& th : pool) th.join();
 }
 
 static float PatchSad(const std::vector<float>& cur, const std::vector<float>& prev,
@@ -217,7 +242,9 @@ void TemporalGuideGenerator::EstimateFlow(const std::vector<float>& cur, const s
     // Solve local flow on a 2x2 lattice, then expand each result to the tiny block.
     // At a 160-wide analysis grid this retains useful object motion while making
     // 30/60 fps playback much less CPU-bound than matching every grid pixel.
-    for (int y = 0; y < h; y += 2) {
+    // Each row pair is independent, so the lattice is split across the cores:
+    // this stage is the exporter's single largest CPU cost at the fine grid.
+    auto solveRowPair = [&](int y) {
         for (int x = 0; x < w; x += 2) {
             float best = std::numeric_limits<float>::max();
             int bx = bestGX, by = bestGY;
@@ -289,13 +316,14 @@ void TemporalGuideGenerator::EstimateFlow(const std::vector<float>& cur, const s
                 }
             }
         }
-    }
+    };
+    ParallelRows(0, h, 2, solveRowPair);
 }
 
 void TemporalGuideGenerator::MedianFlow(std::vector<float>& x, std::vector<float>& y,
                                          uint32_t gw, uint32_t gh) const {
     std::vector<float> ox = x, oy = y;
-    for (uint32_t py = 1; py + 1 < gh; ++py) {
+    auto medianRow = [&](int py) {
         for (uint32_t px = 1; px + 1 < gw; ++px) {
             std::array<float, 9> xs{}, ys{}; size_t k = 0;
             for (int j = -1; j <= 1; ++j) for (int i = -1; i <= 1; ++i) {
@@ -307,7 +335,8 @@ void TemporalGuideGenerator::MedianFlow(std::vector<float>& x, std::vector<float
             const size_t idx = size_t(py) * gw + px;
             x[idx] = xs[4]; y[idx] = ys[4];
         }
-    }
+    };
+    ParallelRows(1, int(gh) - 1, 1, medianRow);
 }
 
 void TemporalGuideGenerator::BuildDepthProxy(const std::vector<float>& luma,
