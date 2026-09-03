@@ -66,7 +66,6 @@ inline constexpr const wchar_t* kEnvModelsDir = L"SMRU_MODELS_DIR"; // where the
 inline constexpr const wchar_t* kWndClassMain          = L"SmackMyRezUp.MainWindow";
 inline constexpr const wchar_t* kWndClassViewport      = L"SmackMyRezUp.Viewport";
 inline constexpr const wchar_t* kWndClassRenderSurface = L"SmackMyRezUp.RenderSurface";
-inline constexpr const wchar_t* kWndClassAdjustments   = L"SmackMyRezUp.Adjustments";
 inline constexpr const wchar_t* kWndClassExportHidden  = L"SmackMyRezUp.ExportHidden";
 
 // Sidecars generated beside a movie and attached automatically.

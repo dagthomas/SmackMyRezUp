@@ -121,7 +121,7 @@
     <dl>
       <dt>DLSS ON / OFF</dt><dd>Enables the neural pass (<kbd>D</kbd>). Off shows the plain resized source.</dd>
       <dt>Aspect</dt><dd>Fit (letterboxed) or Fill (cropped, never stretched).</dd>
-      <dt>Color</dt><dd>Opens <em>Image adjustments</em>: brightness, contrast, saturation, gamma, temperature, tint. Exports carry them (<code>--brightness</code> … <code>--tint</code>).</dd>
+      <dt>AutoMask</dt><dd>The neural model's own character mask (A/B toggle). The Struct and Skin levels apply only while it is on.</dd>
       <dt>MV · Depth · Mask</dt><dd>Debug views of the three guides as the runtime receives them: the motion-vector field (hue = direction), the depth guide, and the ControlMask / bias plane. Keys <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd>; <kbd>1</kbd> final image, <kbd>2</kbd> DLSS input.</dd>
       <dt>NR A / B / C</dt><dd>Which of the runtime's neural models draws the frame. They differ in look; A/B them on your footage.</dd>
     </dl>
@@ -155,7 +155,7 @@
       <dt>Flow</dt><dd>Use <code>&lt;name&gt;_flow.mp4</code> as the motion field when Motion is <em>Model</em>.</dd>
       <dt>DepthMap</dt><dd>Feed <code>&lt;name&gt;_depth.mp4</code> instead of the built-in depth proxy. Visible in the Depth view; the current runtime does not use depth, so the picture itself does not change.</dd>
       <dt>MaskNR</dt><dd>Bind <code>&lt;name&gt;_mask.mp4</code> into the neural pass as the ControlMask. Off by default — compare against MaskNR <em>off</em>, never against a blank mask.</dd>
-      <dt>Reset</dt><dd>Every look control back to its default: colour adjustments, all levels, the neural knobs, effect toggles on, Bypass off, Motion Zero. Keeps the loaded LUT, the model pick and the layout. The Image adjustments window's Reset does the same.</dd>
+      <dt>Reset</dt><dd>Every look control back to its default: colour adjustments, all levels, the neural knobs, effect toggles on, Bypass off, Motion Zero. Keeps the loaded LUT, the model pick and the layout.</dd>
     </dl>
   </div>
 
@@ -174,12 +174,26 @@
       <tr><td class="k">Smooth</td><td class="num">0 – 1</td><td>Motion-compensated temporal smoothing of the neural delta; the same GPU pass live and in exports.</td></tr>
       <tr><td class="k">LUT</td><td class="num">0 – 1</td><td>LUT strength.</td></tr>
       <tr><td class="k">SVR</td><td class="num">0 – 1</td><td>SeedVR restoration strength for the next SeedVR job.</td></tr>
+      <tr><td class="k">Skin</td><td class="num">Local · 0 – 2</td><td>Structure strength on skin. The leftmost third follows Struct; 0 switches it off on skin.</td></tr>
     </table></div>
     <p>Dragging a level also switches its effect on. Values persist in <code>SmackMyRezUp.ini</code>.</p>
   </div>
 
+  <div class="group g-lvl"><h3>Color</h3>
+    <div class="tbl"><table>
+      <tr><th>Slider</th><th>Range</th><th>What it does</th></tr>
+      <tr><td class="k">Bright</td><td class="num">−2 – +2</td><td>Brightness in EV stops.</td></tr>
+      <tr><td class="k">Contr</td><td class="num">0 – 3</td><td>Contrast around middle grey.</td></tr>
+      <tr><td class="k">Sat</td><td class="num">0 – 3</td><td>Saturation.</td></tr>
+      <tr><td class="k">Gamma</td><td class="num">0.25 – 3</td><td>Gamma.</td></tr>
+      <tr><td class="k">Temp</td><td class="num">−1 – +1</td><td>Colour temperature, cool to warm.</td></tr>
+      <tr><td class="k">Tint</td><td class="num">−1 – +1</td><td>Tint, green to magenta.</td></tr>
+    </table></div>
+    <p>Applied after the neural pass to the final image; debug views stay unmodified. Exports carry them (<code>--brightness</code> … <code>--tint</code>).</p>
+  </div>
+
   <h3>Menus</h3>
-  <p><strong>File</strong> Open, Exit · <strong>Playback</strong> transport · <strong>Video</strong> aspect, image adjustments, the five views, fullscreen, <em>Control panel on the left</em> (swaps the columns: panel left, video and its controls right) · <strong>DLSS</strong> enable, estimated/flat depth proxy, mode/quality (Auto, Quality, Balanced, Performance, Ultra Performance, DLAA) — this picks how small the movie is decoded before the neural pass redraws it at output size; DLAA decodes at native size · <strong>Effects</strong> the toggles above, 4K via Lanczos + DLAA, Load/Clear LUT, Motion mode · <strong>Language</strong> · <strong>Help</strong> this page.</p>
+  <p><strong>File</strong> Open, Exit · <strong>Playback</strong> transport · <strong>Video</strong> aspect, the five views, fullscreen, <em>Control panel on the left</em> (swaps the columns: panel left, video and its controls right) · <strong>DLSS</strong> enable, estimated/flat depth proxy, mode/quality (Auto, Quality, Balanced, Performance, Ultra Performance, DLAA) — this picks how small the movie is decoded before the neural pass redraws it at output size; DLAA decodes at native size · <strong>Effects</strong> the toggles above, 4K via Lanczos + DLAA, Load/Clear LUT, Motion mode · <strong>Language</strong> · <strong>Help</strong> this page.</p>
 </section>
 
 <section id="keys">
@@ -190,10 +204,10 @@
     <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>Seek −10 s / +10 s</td><td><kbd>B</kbd></td><td>Bypass all effects</td></tr>
     <tr><td><kbd>M</kbd></td><td>Mute</td><td><kbd>G</kbd></td><td>Estimated / flat depth proxy</td></tr>
     <tr><td><kbd>F11</kbd> <kbd>Esc</kbd></td><td>Fullscreen / leave it</td><td><kbd>1</kbd>–<kbd>5</kbd></td><td>Final · Input · MV · Depth · Mask views</td></tr>
-    <tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Open a file</td><td><kbd>Ctrl</kbd>+<kbd>E</kbd></td><td>Image adjustments</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Open a file</td><td></td><td></td></tr>
     <tr><td><kbd>Ctrl</kbd>+wheel</td><td>Zoom the picture</td><td><kbd>F1</kbd></td><td>This manual</td></tr>
   </table></div>
-  <p>Global hotkeys (work while another app such as ReShade has focus): <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Space</kbd> play/pause, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> seek, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd> mute, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>D</kbd> DLSS, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>C</kbd> adjustments, and the keyboard's media play/pause key. Drag &amp; drop a video or image onto the window to open it.</p>
+  <p>Global hotkeys (work while another app such as ReShade has focus): <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Space</kbd> play/pause, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> seek, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>M</kbd> mute, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>D</kbd> DLSS, and the keyboard's media play/pause key. Drag &amp; drop a video or image onto the window to open it.</p>
 </section>
 
 <section id="sidecars">

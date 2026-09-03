@@ -56,7 +56,7 @@ enum : UINT {
     IDM_FX_LUT=340, IDM_FX_SHARPEN, IDM_FX_TONE, IDM_FX_FLOW, IDM_FX_DEPTHMAP, IDM_FX_MASK, IDM_FX_BYPASS, IDM_FX_LANCZOS4K, IDM_HELP=600, IDM_PANEL_LEFT,
     IDM_NRMODEL_A=350, IDM_NRMODEL_B, IDM_NRMODEL_C, IDM_SHOT,
     IDM_QUALITY_AUTO=330, IDM_QUALITY_QUALITY, IDM_QUALITY_BALANCED, IDM_QUALITY_PERFORMANCE, IDM_QUALITY_ULTRAPERF, IDM_QUALITY_DLAA,
-    IDM_ASPECT_FIT=400, IDM_ASPECT_FILL, IDM_FULLSCREEN, IDM_VIDEO_ADJUSTMENTS,
+    IDM_ASPECT_FIT=400, IDM_ASPECT_FILL, IDM_FULLSCREEN,
     IDM_LANG_BASE=500
 };
 
@@ -67,25 +67,7 @@ static constexpr int HK_FORWARD_10 = 9003;
 static constexpr int HK_MUTE = 9004;
 static constexpr int HK_DLSS = 9005;
 static constexpr int HK_MEDIA_PLAY_PAUSE = 9006;
-static constexpr int HK_ADJUSTMENTS = 9007;
 
-static constexpr int IDC_ADJ_BRIGHTNESS = 7101;
-static constexpr int IDC_ADJ_CONTRAST = 7102;
-static constexpr int IDC_ADJ_SATURATION = 7103;
-static constexpr int IDC_ADJ_GAMMA = 7104;
-static constexpr int IDC_ADJ_TEMPERATURE = 7105;
-static constexpr int IDC_ADJ_TINT = 7106;
-static constexpr int IDC_ADJ_TONEMIX = 7107;
-static constexpr int IDC_ADJ_SHARPEN = 7108;
-static constexpr int IDC_ADJ_SVRSTRENGTH = 7113;
-static constexpr int IDC_ADJ_POSTSHARPEN = 7114;
-static constexpr int IDC_ADJ_NRINTENSITY = 7115;
-static constexpr int IDC_ADJ_NRLOCAL = 7116;
-static constexpr int IDC_ADJ_NRSKIN = 7117;
-static constexpr int IDC_ADJ_NRAUTOMASK = 7118;
-static constexpr int IDC_ADJ_NRSMOOTH = 7119;
-static constexpr int IDC_ADJ_RESET = 7110;
-static constexpr int IDC_ADJ_CLOSE = 7111;
 
 // How small the movie is decoded relative to the output before the neural pass
 // redraws it at output size. This used to be an NGX quality enum handed to the
@@ -340,7 +322,7 @@ static void EnableDarkMenus(){
 class PlayerApp {
 public:
     explicit PlayerApp(AppOptions o):m_opt(std::move(o)){}
-    ~PlayerApp(){SaveVideoSettings();if(m_adjustWnd)DestroyWindow(m_adjustWnd);UnregisterOverlayHotkeys();Unload(); if(m_font)DeleteObject(m_font); if(m_fontSmall)DeleteObject(m_fontSmall); if(m_fontTitle)DeleteObject(m_fontTitle); if(m_fontHead)DeleteObject(m_fontHead); if(m_fontIcon)DeleteObject(m_fontIcon); if(m_exportProc)CloseHandle(m_exportProc); if(m_exportErrRead)CloseHandle(m_exportErrRead); if(m_flowProc)CloseHandle(m_flowProc); if(m_depthMapProc)CloseHandle(m_depthMapProc); if(m_maskProc)CloseHandle(m_maskProc); if(m_svrProc)CloseHandle(m_svrProc); if(m_svrOutRead)CloseHandle(m_svrOutRead); /* running background jobs keep going detached */}
+    ~PlayerApp(){SaveVideoSettings();UnregisterOverlayHotkeys();Unload(); if(m_font)DeleteObject(m_font); if(m_fontSmall)DeleteObject(m_fontSmall); if(m_fontTitle)DeleteObject(m_fontTitle); if(m_fontHead)DeleteObject(m_fontHead); if(m_fontIcon)DeleteObject(m_fontIcon); if(m_exportProc)CloseHandle(m_exportProc); if(m_exportErrRead)CloseHandle(m_exportErrRead); if(m_flowProc)CloseHandle(m_flowProc); if(m_depthMapProc)CloseHandle(m_depthMapProc); if(m_maskProc)CloseHandle(m_maskProc); if(m_svrProc)CloseHandle(m_svrProc); if(m_svrOutRead)CloseHandle(m_svrOutRead); /* running background jobs keep going detached */}
 
     bool Create(HINSTANCE hi) {
         m_loc.Initialize();
@@ -348,8 +330,6 @@ public:
         INITCOMMONCONTROLSEX icc{sizeof(icc),ICC_BAR_CLASSES};InitCommonControlsEx(&icc);
         WNDCLASSW r{}; r.style=CS_DBLCLKS|CS_OWNDC; r.lpfnWndProc=RenderWndProcStatic; r.hInstance=hi; r.lpszClassName=smru::kWndClassRenderSurface; r.hCursor=LoadCursor(nullptr,IDC_ARROW); r.hbrBackground=nullptr; RegisterClassW(&r);
         WNDCLASSW v{}; v.lpfnWndProc=ViewportWndProcStatic; v.hInstance=hi; v.lpszClassName=smru::kWndClassViewport; v.hCursor=LoadCursor(nullptr,IDC_ARROW); v.hbrBackground=(HBRUSH)GetStockObject(BLACK_BRUSH); RegisterClassW(&v);
-        m_adjBrush=CreateSolidBrush(Pal::Surface);
-        WNDCLASSW a{}; a.lpfnWndProc=AdjustWndProcStatic; a.hInstance=hi; a.lpszClassName=smru::kWndClassAdjustments; a.hCursor=LoadCursor(nullptr,IDC_ARROW); a.hbrBackground=m_adjBrush; RegisterClassW(&a);
         WNDCLASSW w{}; w.lpfnWndProc=WndProcStatic; w.hInstance=hi; w.lpszClassName=smru::kWndClassMain; w.hCursor=LoadCursor(nullptr,IDC_ARROW); w.hbrBackground=CreateSolidBrush(Pal::Bg); RegisterClassW(&w);
         RECT rc{0,0,1440,880}; AdjustWindowRect(&rc,WS_OVERLAPPEDWINDOW,TRUE);
         const std::wstring appTitle=m_loc.Get(L"app.title");
@@ -513,7 +493,7 @@ private:
         m_exportRes=std::clamp(int(ReadSetting(L"ExportRes",0.0f)),0,3);
         m_exportCodec=std::clamp(int(ReadSetting(L"ExportCodec",0.0f)),0,2);
         {const int open=int(ReadSetting(L"PanelOpen",49.0f));
-         for(int g=0;g<6;++g)m_groupOpen[g]=(open>>g)&1;}
+         for(int g=0;g<7;++g)m_groupOpen[g]=(open>>g)&1;}
         m_nrModelPick=int(ReadSetting(L"NrModel",-1.0f));if(m_nrModelPick<-1||m_nrModelPick>2)m_nrModelPick=-1;
         m_nrIntensity=std::min(1.0f,std::max(0.0f,ReadSetting(L"NrIntensity",1.0f)));
         m_nrLocalStructure=std::min(2.0f,std::max(0.0f,ReadSetting(L"NrLocalStructure",1.0f)));
@@ -549,7 +529,7 @@ private:
         WriteSetting(L"NrSmooth",m_nrSmooth);
         WriteSetting(L"ExportRes",float(m_exportRes));
         WriteSetting(L"ExportCodec",float(m_exportCodec));
-        {int open=0;for(int g=0;g<6;++g)if(m_groupOpen[g])open|=1<<g;
+        {int open=0;for(int g=0;g<7;++g)if(m_groupOpen[g])open|=1<<g;
          WriteSetting(L"PanelOpen",float(open));}
         WriteSetting(L"NrModel",float(m_nrModelPick));
         WriteSetting(L"NrIntensity",m_nrIntensity);
@@ -616,182 +596,12 @@ private:
         RECT panel{PanelX0(c),0,PanelX0(c)+SIDE_W,c.bottom};InvalidateRect(m_hwnd,&panel,FALSE);
     }
 
-    void SetTrack(HWND h,int id,int lo,int hi,int pos){
-        HWND t=GetDlgItem(h,id);if(!t)return;SendMessageW(t,TBM_SETRANGE,TRUE,MAKELPARAM(lo,hi));SendMessageW(t,TBM_SETPOS,TRUE,pos);
-    }
-
-    void SetAdjustmentValue(HWND h,int id,const std::wstring& value){
-        HWND v=GetDlgItem(h,id+100);if(v)SetWindowTextW(v,value.c_str());
-    }
-
     static std::wstring SignedValue(float v,const wchar_t* suffix=L""){
         wchar_t b[64]{};swprintf_s(b,L"%+.2f%ls",v,suffix);return b;
     }
 
     static std::wstring PlainValue(float v,const wchar_t* suffix=L""){
         wchar_t b[64]{};swprintf_s(b,L"%.2f%ls",v,suffix);return b;
-    }
-
-    void UpdateAdjustmentValueLabels(HWND h){
-        SetAdjustmentValue(h,IDC_ADJ_BRIGHTNESS,SignedValue(m_colorSettings.brightness,L" EV"));
-        SetAdjustmentValue(h,IDC_ADJ_CONTRAST,PlainValue(m_colorSettings.contrast));
-        SetAdjustmentValue(h,IDC_ADJ_SATURATION,PlainValue(m_colorSettings.saturation));
-        SetAdjustmentValue(h,IDC_ADJ_GAMMA,PlainValue(m_colorSettings.gamma));
-        SetAdjustmentValue(h,IDC_ADJ_TEMPERATURE,SignedValue(m_colorSettings.temperature));
-        SetAdjustmentValue(h,IDC_ADJ_TINT,SignedValue(m_colorSettings.tint));
-        SetAdjustmentValue(h,IDC_ADJ_TONEMIX,PlainValue(m_toneMix));
-        SetAdjustmentValue(h,IDC_ADJ_SHARPEN,PlainValue(m_sharpen));
-        SetAdjustmentValue(h,IDC_ADJ_POSTSHARPEN,PlainValue(m_postSharpen));
-        SetAdjustmentValue(h,IDC_ADJ_NRSMOOTH,PlainValue(m_nrSmooth));
-        SetAdjustmentValue(h,IDC_ADJ_NRINTENSITY,PlainValue(m_nrIntensity));
-        SetAdjustmentValue(h,IDC_ADJ_NRLOCAL,PlainValue(m_nrLocalStructure));
-        SetAdjustmentValue(h,IDC_ADJ_NRSKIN,m_nrSkinStructure<0.0f?std::wstring(L"= Local"):PlainValue(m_nrSkinStructure));
-    }
-
-    void SyncAdjustmentControls(HWND h){
-        SetTrack(h,IDC_ADJ_BRIGHTNESS,0,400,int(std::lround((m_colorSettings.brightness+2.0f)*100.0f)));
-        SetTrack(h,IDC_ADJ_CONTRAST,0,300,int(std::lround(m_colorSettings.contrast*100.0f)));
-        SetTrack(h,IDC_ADJ_SATURATION,0,300,int(std::lround(m_colorSettings.saturation*100.0f)));
-        SetTrack(h,IDC_ADJ_GAMMA,25,300,int(std::lround(m_colorSettings.gamma*100.0f)));
-        SetTrack(h,IDC_ADJ_TEMPERATURE,0,200,int(std::lround((m_colorSettings.temperature+1.0f)*100.0f)));
-        SetTrack(h,IDC_ADJ_TINT,0,200,int(std::lround((m_colorSettings.tint+1.0f)*100.0f)));
-        SetTrack(h,IDC_ADJ_TONEMIX,0,100,int(std::lround(m_toneMix*100.0f)));
-        SetTrack(h,IDC_ADJ_SHARPEN,0,100,int(std::lround(m_sharpen*100.0f)));
-        SetTrack(h,IDC_ADJ_POSTSHARPEN,0,100,int(std::lround(m_postSharpen*100.0f)));
-        SetTrack(h,IDC_ADJ_NRSMOOTH,0,100,int(std::lround(m_nrSmooth*100.0f)));
-        SetTrack(h,IDC_ADJ_NRINTENSITY,0,100,int(std::lround(m_nrIntensity*100.0f)));
-        SetTrack(h,IDC_ADJ_NRLOCAL,0,200,int(std::lround(m_nrLocalStructure*100.0f)));
-        SetTrack(h,IDC_ADJ_NRSKIN,0,300,int(std::lround((m_nrSkinStructure+1.0f)*100.0f)));
-        CheckDlgButton(h,IDC_ADJ_NRAUTOMASK,m_nrAutoMask?BST_CHECKED:BST_UNCHECKED);
-        UpdateAdjustmentValueLabels(h);
-    }
-
-    void ReadAdjustmentControls(HWND h){
-        auto pos=[&](int id)->int{HWND t=GetDlgItem(h,id);return t?int(SendMessageW(t,TBM_GETPOS,0,0)):0;};
-        m_colorSettings.brightness=float(pos(IDC_ADJ_BRIGHTNESS))/100.0f-2.0f;
-        m_colorSettings.contrast=float(pos(IDC_ADJ_CONTRAST))/100.0f;
-        m_colorSettings.saturation=float(pos(IDC_ADJ_SATURATION))/100.0f;
-        m_colorSettings.gamma=std::max(0.25f,float(pos(IDC_ADJ_GAMMA))/100.0f);
-        m_colorSettings.temperature=float(pos(IDC_ADJ_TEMPERATURE))/100.0f-1.0f;
-        m_colorSettings.tint=float(pos(IDC_ADJ_TINT))/100.0f-1.0f;
-        m_toneMix=float(pos(IDC_ADJ_TONEMIX))/100.0f;
-        m_sharpen=float(pos(IDC_ADJ_SHARPEN))/100.0f;
-        m_postSharpen=float(pos(IDC_ADJ_POSTSHARPEN))/100.0f;
-        m_nrSmooth=float(pos(IDC_ADJ_NRSMOOTH))/100.0f;
-        m_nrIntensity=float(pos(IDC_ADJ_NRINTENSITY))/100.0f;
-        m_nrLocalStructure=float(pos(IDC_ADJ_NRLOCAL))/100.0f;
-        // Skin slider: leftmost third snaps to the -1 sentinel ("follow local");
-        // 0 means skin structure OFF, which is deliberately distinct.
-        m_nrSkinStructure=float(pos(IDC_ADJ_NRSKIN))/100.0f-1.0f;
-        if(m_nrSkinStructure<0.0f)m_nrSkinStructure=-1.0f;
-        UpdateAdjustmentValueLabels(h);ApplyVideoAdjustments(true);
-    }
-
-    // One "label | slider | value" row of the adjustments panel. Rows sit on a
-    // 50 px grid from the top; the value static's id is the slider's + 100,
-    // which is what WM_CTLCOLORSTATIC keys the brighter value column off.
-    void CreateAdjustmentRow(HWND h,int id,const std::wstring& label,int row){
-        const int y=28+50*row;
-        HFONT f=m_fontSmall;
-        HWND l=CreateWindowExW(0,L"STATIC",label.c_str(),WS_CHILD|WS_VISIBLE|SS_LEFT,16,y,116,20,h,nullptr,nullptr,nullptr);
-        HWND track=CreateWindowExW(0,TRACKBAR_CLASSW,L"",WS_CHILD|WS_VISIBLE|TBS_HORZ|TBS_NOTICKS,132,y-6,236,30,h,(HMENU)(INT_PTR)id,nullptr,nullptr);
-        HWND value=CreateWindowExW(0,L"STATIC",L"",WS_CHILD|WS_VISIBLE|SS_RIGHT,370,y,64,20,h,(HMENU)(INT_PTR)(id+100),nullptr,nullptr);
-        SendMessageW(l,WM_SETFONT,(WPARAM)f,TRUE);SendMessageW(track,WM_SETFONT,(WPARAM)f,TRUE);SendMessageW(value,WM_SETFONT,(WPARAM)f,TRUE);
-    }
-
-    void BuildAdjustmentControls(HWND h){
-        int row=0;
-        CreateAdjustmentRow(h,IDC_ADJ_BRIGHTNESS,T(L"adjustments.brightness"),row++);
-        CreateAdjustmentRow(h,IDC_ADJ_CONTRAST,T(L"adjustments.contrast"),row++);
-        CreateAdjustmentRow(h,IDC_ADJ_SATURATION,T(L"adjustments.saturation"),row++);
-        CreateAdjustmentRow(h,IDC_ADJ_GAMMA,T(L"adjustments.gamma"),row++);
-        CreateAdjustmentRow(h,IDC_ADJ_TEMPERATURE,T(L"adjustments.temperature"),row++);
-        CreateAdjustmentRow(h,IDC_ADJ_TINT,T(L"adjustments.tint"),row++);
-        CreateAdjustmentRow(h,IDC_ADJ_TONEMIX,L"NR Tone Mix",row++);
-        CreateAdjustmentRow(h,IDC_ADJ_SHARPEN,L"Pre-Sharpen",row++);
-        CreateAdjustmentRow(h,IDC_ADJ_POSTSHARPEN,L"Post-Sharpen (after NR)",row++);
-        // NR Smooth: motion-compensated EMA on the NR delta (--nr-smooth), the
-        // same GPU pass live and in the exporter. Calms NR boiling/jiggle.
-        CreateAdjustmentRow(h,IDC_ADJ_NRSMOOTH,L"NR Smooth",row++);
-        // Direct DLSS-NR live knobs (read per evaluate - fully live).
-        CreateAdjustmentRow(h,IDC_ADJ_NRINTENSITY,L"NR Intensity",row++);
-        CreateAdjustmentRow(h,IDC_ADJ_NRLOCAL,L"NR Structure",row++);
-        CreateAdjustmentRow(h,IDC_ADJ_NRSKIN,L"NR Skin",row++);
-        HFONT f=m_fontSmall;
-        {HWND am=CreateWindowExW(0,L"BUTTON",L"NR Auto Mask (enables structure strengths)",WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX,16,664,340,22,h,(HMENU)(INT_PTR)IDC_ADJ_NRAUTOMASK,nullptr,nullptr);
-         SendMessageW(am,WM_SETFONT,(WPARAM)f,TRUE);SetWindowTheme(am,L"DarkMode_Explorer",nullptr);}
-        HWND note=CreateWindowExW(0,L"STATIC",T(L"adjustments.note").c_str(),WS_CHILD|WS_VISIBLE|SS_LEFT,16,698,418,38,h,nullptr,nullptr,nullptr);SendMessageW(note,WM_SETFONT,(WPARAM)f,TRUE);
-        HWND reset=CreateWindowExW(0,L"BUTTON",T(L"adjustments.reset").c_str(),WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,252,742,86,30,h,(HMENU)(INT_PTR)IDC_ADJ_RESET,nullptr,nullptr);
-        HWND close=CreateWindowExW(0,L"BUTTON",T(L"adjustments.close").c_str(),WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON,348,742,86,30,h,(HMENU)(INT_PTR)IDC_ADJ_CLOSE,nullptr,nullptr);
-        SendMessageW(reset,WM_SETFONT,(WPARAM)f,TRUE);SendMessageW(close,WM_SETFONT,(WPARAM)f,TRUE);
-        SetWindowTheme(reset,L"DarkMode_Explorer",nullptr);SetWindowTheme(close,L"DarkMode_Explorer",nullptr);
-        SyncAdjustmentControls(h);
-    }
-
-    void ShowAdjustments(){
-        if(m_adjustWnd&&IsWindow(m_adjustWnd)){ShowWindow(m_adjustWnd,SW_SHOWNORMAL);SetForegroundWindow(m_adjustWnd);return;}
-        RECT pr{};GetWindowRect(m_hwnd,&pr);const int w=466,h=830,pw=int(pr.right-pr.left),ph=int(pr.bottom-pr.top);int x=int(pr.left)+std::max(0,(pw-w)/2),y=int(pr.top)+std::max(0,(ph-h)/2);
-        m_adjustWnd=CreateWindowExW(WS_EX_TOOLWINDOW,smru::kWndClassAdjustments,T(L"adjustments.title").c_str(),
-            WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_VISIBLE,x,y,w,h,m_hwnd,nullptr,GetModuleHandleW(nullptr),this);
-    }
-
-    LRESULT AdjustWndProc(HWND h,UINT m,WPARAM w,LPARAM l){
-        switch(m){
-        case WM_CREATE:{BOOL dark=TRUE;DwmSetWindowAttribute(h,20,&dark,sizeof(dark));
-            DWORD corner=2;DwmSetWindowAttribute(h,33,&corner,sizeof(corner));
-            COLORREF cap=Pal::Surface;DwmSetWindowAttribute(h,35,&cap,sizeof(cap));
-            COLORREF bord=Pal::Line;DwmSetWindowAttribute(h,34,&bord,sizeof(bord));
-            COLORREF txt=Pal::Ink;DwmSetWindowAttribute(h,36,&txt,sizeof(txt));
-            BuildAdjustmentControls(h);return 0;}
-        case WM_HSCROLL:ReadAdjustmentControls(h);return 0;
-        case WM_CTLCOLORSTATIC:{
-            // Statics AND trackbar backgrounds land here: transparent quiet ink
-            // on the panel surface; the value column gets full ink.
-            HDC dc=(HDC)w;SetBkMode(dc,TRANSPARENT);
-            const int id=GetDlgCtrlID((HWND)l);
-            SetTextColor(dc,id>=7200?Pal::Ink:Pal::Ink2);
-            return (LRESULT)m_adjBrush;}
-        case WM_NOTIFY:{
-            // Nordic trackbars: slim slate track, frozen-blue done-portion, ink
-            // dot thumb - replaces the light themed channel that fought the panel.
-            auto* nm=reinterpret_cast<LPNMHDR>(l);
-            if(nm->code==NM_CUSTOMDRAW){
-                wchar_t cls[32]{};GetClassNameW(nm->hwndFrom,cls,31);
-                if(_wcsicmp(cls,TRACKBAR_CLASSW)==0){
-                    auto* cd=reinterpret_cast<LPNMCUSTOMDRAW>(l);
-                    if(cd->dwDrawStage==CDDS_PREPAINT)return CDRF_NOTIFYITEMDRAW;
-                    if(cd->dwDrawStage==CDDS_ITEMPREPAINT){
-                        if(cd->dwItemSpec==TBCD_TICS)return CDRF_SKIPDEFAULT;
-                        if(cd->dwItemSpec==TBCD_CHANNEL){
-                            RECT tb{};SendMessageW(nm->hwndFrom,TBM_GETTHUMBRECT,0,(LPARAM)&tb);
-                            FillRect(cd->hdc,&cd->rc,m_adjBrush);
-                            const int cy=(cd->rc.top+cd->rc.bottom)/2;
-                            RECT track{cd->rc.left,cy-2,cd->rc.right,cy+2};
-                            HBRUSH b1=CreateSolidBrush(Pal::Line);FillRect(cd->hdc,&track,b1);DeleteObject(b1);
-                            RECT done=track;done.right=std::clamp<LONG>((tb.left+tb.right)/2,track.left,track.right);
-                            HBRUSH b2=CreateSolidBrush(Pal::Accent);FillRect(cd->hdc,&done,b2);DeleteObject(b2);
-                            return CDRF_SKIPDEFAULT;
-                        }
-                        if(cd->dwItemSpec==TBCD_THUMB){
-                            const int cx=(cd->rc.left+cd->rc.right)/2,cy=(cd->rc.top+cd->rc.bottom)/2;
-                            HBRUSH b=CreateSolidBrush(Pal::Ink);auto ob=SelectObject(cd->hdc,b),op=SelectObject(cd->hdc,GetStockObject(NULL_PEN));
-                            Ellipse(cd->hdc,cx-7,cy-7,cx+8,cy+8);
-                            SelectObject(cd->hdc,ob);SelectObject(cd->hdc,op);DeleteObject(b);
-                            return CDRF_SKIPDEFAULT;
-                        }
-                    }
-                }
-            }
-            break;}
-        case WM_COMMAND:
-            if(LOWORD(w)==IDC_ADJ_RESET){ResetAll();return 0;}   // same reset as the panel's Reset button
-            if(LOWORD(w)==IDC_ADJ_NRAUTOMASK){m_nrAutoMask=IsDlgButtonChecked(h,IDC_ADJ_NRAUTOMASK)==BST_CHECKED;ApplyVideoAdjustments(true);SaveVideoSettings();return 0;}
-            if(LOWORD(w)==IDC_ADJ_CLOSE){DestroyWindow(h);return 0;}
-            break;
-        case WM_CLOSE:DestroyWindow(h);return 0;
-        case WM_DESTROY:SaveVideoSettings();if(h==m_adjustWnd)m_adjustWnd=nullptr;return 0;
-        }
-        return DefWindowProcW(h,m,w,l);
     }
 
     static LRESULT CALLBACK WndProcStatic(HWND h,UINT m,WPARAM w,LPARAM l) {
@@ -808,13 +618,6 @@ private:
             FillRect(dc,&r,(HBRUSH)GetStockObject(BLACK_BRUSH));EndPaint(h,&ps);return 0;
         }}
         return DefWindowProcW(h,m,w,l);
-    }
-
-    static LRESULT CALLBACK AdjustWndProcStatic(HWND h,UINT m,WPARAM w,LPARAM l) {
-        PlayerApp* a=nullptr;
-        if(m==WM_NCCREATE){auto* cs=reinterpret_cast<CREATESTRUCTW*>(l);a=static_cast<PlayerApp*>(cs->lpCreateParams);SetWindowLongPtrW(h,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(a));}
-        else a=reinterpret_cast<PlayerApp*>(GetWindowLongPtrW(h,GWLP_USERDATA));
-        return a?a->AdjustWndProc(h,m,w,l):DefWindowProcW(h,m,w,l);
     }
 
     static LRESULT CALLBACK RenderWndProcStatic(HWND h,UINT m,WPARAM w,LPARAM l) {
@@ -844,7 +647,7 @@ private:
         auto add=[&](HMENU m,UINT id,const wchar_t* key){std::wstring s=T(key);AppendMenuW(m,MF_STRING,id,s.c_str());};
         add(file,IDM_OPEN,L"menu.open"); AppendMenuW(file,MF_SEPARATOR,0,nullptr); add(file,IDM_EXIT,L"menu.exit");
         add(play,IDM_PLAY,L"menu.playpause"); add(play,IDM_STOP,L"menu.stop"); add(play,IDM_BACK10,L"menu.back10"); add(play,IDM_FWD10,L"menu.forward10"); add(play,IDM_MUTE,L"menu.mute");
-        add(video,IDM_ASPECT_FIT,L"menu.aspectfit"); add(video,IDM_ASPECT_FILL,L"menu.aspectfill"); add(video,IDM_VIDEO_ADJUSTMENTS,L"menu.adjustments"); AppendMenuW(video,MF_SEPARATOR,0,nullptr);
+        add(video,IDM_ASPECT_FIT,L"menu.aspectfit"); add(video,IDM_ASPECT_FILL,L"menu.aspectfill"); AppendMenuW(video,MF_SEPARATOR,0,nullptr);
         add(video,IDM_VIEW_FINAL,L"menu.final"); add(video,IDM_VIEW_INPUT,L"menu.input"); add(video,IDM_VIEW_MV,L"menu.mv"); add(video,IDM_VIEW_DEPTH,L"menu.depth"); add(video,IDM_VIEW_MASK,L"menu.mask"); AppendMenuW(video,MF_SEPARATOR,0,nullptr); add(video,IDM_FULLSCREEN,L"menu.fullscreen");
         AppendMenuW(video,MF_SEPARATOR,0,nullptr); AppendMenuW(video,MF_STRING|(m_panelLeft?MF_CHECKED:MF_UNCHECKED),IDM_PANEL_LEFT,L"Control panel on the left");
         add(quality,IDM_QUALITY_AUTO,L"menu.quality_auto"); AppendMenuW(quality,MF_STRING,IDM_QUALITY_QUALITY,L"Quality"); AppendMenuW(quality,MF_STRING,IDM_QUALITY_BALANCED,L"Balanced"); AppendMenuW(quality,MF_STRING,IDM_QUALITY_PERFORMANCE,L"Performance"); AppendMenuW(quality,MF_STRING,IDM_QUALITY_ULTRAPERF,L"Ultra Performance"); AppendMenuW(quality,MF_STRING,IDM_QUALITY_DLAA,L"DLAA");
@@ -892,9 +695,7 @@ private:
     }
 
     void ApplyLanguage(const std::wstring& code) {
-        const bool reopenAdjust=(m_adjustWnd!=nullptr);if(m_adjustWnd)DestroyWindow(m_adjustWnd);
         m_loc.SetLanguage(code,true); HMENU old=GetMenu(m_hwnd),fresh=CreateMenuBar(); SetMenu(m_hwnd,fresh); DrawMenuBar(m_hwnd); if(old)DestroyMenu(old); UpdateTitle(); InvalidateRect(m_hwnd,nullptr,TRUE);
-        if(reopenAdjust)ShowAdjustments();
     }
 
     bool Load(const std::wstring& path) {
@@ -1168,10 +969,11 @@ private:
     // 38 A/B vertical split, 39 A/B horizontal split,
     // 43 GenMask (text-prompted segmentation job), 44 MaskNR (bind the mask
     // into the neural pass, A/B), 45 Reset (every look control to defaults).
-    static constexpr int kBtnCount=46;   // 40 = export resolution cycle, 41 = export codec cycle, 42 = save processed frame
+    static constexpr int kBtnCount=47;   // 46 = NR Auto Mask (was the Image adjustments window button)
+    // (kept for reference)   // 40 = export resolution cycle, 41 = export codec cycle, 42 = save processed frame
     static constexpr int kBarOrder[8]={0, 1,2,3,4,16, 5, 11};
     static constexpr int kBarGroup[8]={0, 1,1,1,1,1,  2, 3};
-    static constexpr int kPanelG0[]={6,7,8,10,23,26,28,29,30};
+    static constexpr int kPanelG0[]={6,7,10,23,26,28,29,30,46};
     static constexpr int kPanelG1[]={12,13,14,15,40,41,25,42,17,9,43,34};
     static constexpr int kPanelG2[]={31,32,33};
     static constexpr int kPanelG3[]={18,19,20,22,24,21,44,27,45};
@@ -1184,35 +986,53 @@ private:
     struct BarFrame{RECT r;const wchar_t* caption;int group;COLORREF tint;};
     RECT m_btnRect[kBtnCount]{};
     std::vector<BarFrame> m_barFrames;
-    // Draggable level sliders in the panel, mirrored with the Adjustments
-    // window. Tracks are normalized 0..1; kSliderMax maps to the real range
-    // (Structure runs 0..2).
-    static constexpr int kSliderCount=8;
-    static constexpr const wchar_t* kSliderLabel[kSliderCount]={L"NR",L"Struct",L"Sharp",L"Post",L"Tone",L"Smooth",L"LUT",L"SVR"};
-    static constexpr float kSliderMax[kSliderCount]={1,2,1,1,1,1,1,1};
+    // Draggable sliders in the panel: Levels (the neural and effect strengths)
+    // and Color (the picture adjustments, applied after the neural pass).
+    // Tracks are normalized 0..1; kSliderMin/Max map them to the real ranges
+    // (Structure 0..2, Brightness -2..+2 EV, ...). Skin's leftmost third is
+    // the -1 sentinel: follow Structure.
+    static constexpr int kSliderCount=15;
+    static constexpr int kColorSliderFirst=9;   // sliders 9.. form the Color group
+    static constexpr const wchar_t* kSliderLabel[kSliderCount]={L"NR",L"Struct",L"Sharp",L"Post",L"Tone",L"Smooth",L"LUT",L"SVR",L"Skin",
+                                                                L"Bright",L"Contr",L"Sat",L"Gamma",L"Temp",L"Tint"};
+    static constexpr float kSliderMin[kSliderCount]={0,0,0,0,0,0,0,0,-1, -2,0,0,0.25f,-1,-1};
+    static constexpr float kSliderMax[kSliderCount]={1,2,1,1,1,1,1,1, 2,  2,3,3,3,    1, 1};
     RECT m_sliderRect[kSliderCount]{};RECT m_sliderTrack[kSliderCount]{};
     int m_dragSlider=-1;
     HWND m_tip=nullptr;int m_tipId=-1;
     int m_pressBtn=-1;   // armed on press, fires on release while still over
-    // Default: Picture, Inspect and Levels expanded; Export & Jobs, Motion
-    // and Effects start collapsed (bitmask 49, persisted as PanelOpen).
-    bool m_groupOpen[6]={true,false,false,false,true,true};
+    // Default: Picture, Inspect and Levels expanded; Export & Jobs, Motion,
+    // Effects and Color start collapsed (bitmask 49, persisted as PanelOpen).
+    bool m_groupOpen[7]={true,false,false,false,true,true,false};
     int m_exportRes=0;   // 0 = preview size, 1 = 3840 long side, 2 = 7680 long side, 3 = native (source size, 1:1 neural pass)
     int m_exportCodec=0; // 0 = x264, 1 = HEVC NVENC, 2 = AV1 NVENC
     int m_panelScroll=0,m_panelContentH=0;
 
-    float GetSliderVal(int s)const{
-        float v=0.0f;
+    float SliderRaw(int s)const{
         switch(s){
-        case 0:v=m_nrIntensity;break;case 1:v=m_nrLocalStructure;break;
-        case 2:v=m_sharpen;break;case 3:v=m_postSharpen;break;
-        case 4:v=m_toneMix;break;case 5:v=m_nrSmooth;break;case 6:v=m_lutStrength;break;
-        case 7:v=m_svrStrength;break;
+        case 0:return m_nrIntensity;case 1:return m_nrLocalStructure;
+        case 2:return m_sharpen;case 3:return m_postSharpen;
+        case 4:return m_toneMix;case 5:return m_nrSmooth;case 6:return m_lutStrength;
+        case 7:return m_svrStrength;case 8:return m_nrSkinStructure;
+        case 9:return m_colorSettings.brightness;case 10:return m_colorSettings.contrast;
+        case 11:return m_colorSettings.saturation;case 12:return m_colorSettings.gamma;
+        case 13:return m_colorSettings.temperature;case 14:return m_colorSettings.tint;
         }
-        return kSliderMax[s]>0.0f?v/kSliderMax[s]:v;
+        return 0.0f;
+    }
+    float GetSliderVal(int s)const{
+        const float span=kSliderMax[s]-kSliderMin[s];
+        return span>0.0f?(SliderRaw(s)-kSliderMin[s])/span:SliderRaw(s);
+    }
+    // The chip above a dragged or hovered knob: the real value, signed where
+    // the range crosses zero, "Local" for the Skin sentinel.
+    std::wstring SliderValueText(int s)const{
+        const float v=SliderRaw(s);
+        if(s==8&&v<0.0f)return L"Local";
+        return kSliderMin[s]<0.0f?SignedValue(v):PlainValue(v);
     }
     void SetSliderVal(int s,float v){
-        v=std::clamp(v,0.0f,1.0f)*kSliderMax[s];
+        v=kSliderMin[s]+std::clamp(v,0.0f,1.0f)*(kSliderMax[s]-kSliderMin[s]);
         // Dragging a level clearly means "apply this effect": arm its A/B toggle
         // so the slider always has a visible result (Bypass still overrides all).
         switch(s){
@@ -1224,9 +1044,17 @@ private:
         case 5:m_nrSmooth=v;break;
         case 6:m_lutStrength=v;if(v>0.001f)m_fxLut=true;break;
         case 7:m_svrStrength=v;break; // applies to the next SeedVR job
+        // Skin: the leftmost third snaps to the -1 sentinel (follow Structure);
+        // 0 means skin structure OFF, which is deliberately distinct.
+        case 8:m_nrSkinStructure=v<0.0f?-1.0f:v;break;
+        case 9:m_colorSettings.brightness=v;break;
+        case 10:m_colorSettings.contrast=v;break;
+        case 11:m_colorSettings.saturation=v;break;
+        case 12:m_colorSettings.gamma=v;break;
+        case 13:m_colorSettings.temperature=v;break;
+        case 14:m_colorSettings.tint=v;break;
         }
         ApplyVideoAdjustments(true);InvalidateControls();
-        if(m_adjustWnd&&IsWindow(m_adjustWnd))SyncAdjustmentControls(m_adjustWnd);
     }
     bool IsBarBtn(int i)const{
         switch(i){case 0:case 1:case 2:case 3:case 4:case 5:case 11:case 16:return true;}return false;
@@ -1242,7 +1070,7 @@ private:
     // (green), 4 Motion (teal), 5 Inspect (sand). Mirrors the group captions.
     int BtnRole(int i)const{
         switch(i){
-        case 6:case 7:case 8:case 10:case 23:case 26:case 28:case 29:case 30:return 1;
+        case 6:case 7:case 10:case 23:case 26:case 28:case 29:case 30:case 46:return 1;
         case 9:case 12:case 13:case 14:case 15:case 17:case 25:case 34:case 40:case 41:case 42:case 43:return 2;
         case 18:case 19:case 20:case 21:case 22:case 24:case 27:case 44:case 45:return 3;
         case 31:case 32:case 33:return 4;
@@ -1265,7 +1093,7 @@ private:
         case 5:return m_muted?T(L"button.sound"):T(L"button.mute");
         case 6:return m_renderer&&m_renderer->DLSSEnabled()?L"DLSS ON":L"DLSS OFF";
         case 7:return m_fill?T(L"button.crop"):T(L"button.aspect");
-        case 8:return T(L"button.color");
+        case 46:return L"AutoMask";
         case 9:return m_depthMapProc?L"Depth...":L"GenDepth";
         case 10:return L"MV";
         case 11:return T(L"button.full");
@@ -1317,7 +1145,7 @@ private:
         case 2:return m_playing?L'\xE769':L'\xE768';
         case 3:return L'\xE71A';case 4:return L'\xEB9D';
         case 5:return m_muted?L'\xE74F':L'\xE767';
-        case 7:return L'\xE7A8';case 8:return L'\xE790';
+        case 7:return L'\xE7A8';
         case 11:return m_fullscreen?L'\xE73F':L'\xE740';
         case 12:return L'\xE898';case 16:return L'\xE8EE';case 25:return L'\xE722';
         }
@@ -1328,7 +1156,7 @@ private:
         case 2:return m_playing;
         case 5:return m_muted;
         case 6:return m_renderer&&m_renderer->DLSSEnabled();
-        case 8:return m_adjustWnd!=nullptr;
+        case 46:return m_nrAutoMask;
         case 10:return m_renderer&&m_renderer->GetDebugView()==D3D12Renderer::DebugView::MotionVectors;
         case 23:return m_renderer&&m_renderer->GetDebugView()==D3D12Renderer::DebugView::Depth;
         case 26:return m_renderer&&m_renderer->GetDebugView()==D3D12Renderer::DebugView::BiasMask;
@@ -1403,7 +1231,7 @@ private:
             const int gut=6;
             const int colW=(px1-px0-12-gut)/2;
             int y=8-m_panelScroll;
-            static constexpr COLORREF kGroupTint[6]={Pal::BlueInk,Pal::VioletInk,Pal::TealInk,Pal::GreenInk,Pal::SandInk,Pal::Ink2};
+            static constexpr COLORREF kGroupTint[7]={Pal::BlueInk,Pal::VioletInk,Pal::TealInk,Pal::GreenInk,Pal::SandInk,Pal::Ink2,Pal::BlueInk};
             for(int gi=0;gi<5;++gi){
                 const PanelGroup&g=kPanelGroups[gi];
                 const int frameTop=y;
@@ -1424,19 +1252,23 @@ private:
                 m_barFrames.push_back({RECT{px0-6,frameTop,px1+6,y},g.caption,gi,kGroupTint[gi]});
                 y+=12;   // spacing is the only group separator now
             }
-            {
+            // Two slider groups: Levels (the neural and effect strengths) and
+            // Color (the picture adjustments the old Image adjustments window held).
+            for(int sg=0;sg<2;++sg){
+                const int group=5+sg,first=sg?kColorSliderFirst:0,last=sg?kSliderCount:kColorSliderFirst;
+                if(sg)y+=12;
                 const int frameTop=y;y+=22;
-                if(m_groupOpen[5]){
-                    for(int s=0;s<kSliderCount;++s){
+                if(m_groupOpen[group]){
+                    for(int s=first;s<last;++s){
                         m_sliderRect[s]=RECT{px0+6,y,px1-6,y+20};
                         m_sliderTrack[s]=RECT{px0+64,y+7,px1-14,y+13};   // label column fits "Smooth"
                         y+=22;
                     }
                     y+=6;
                 } else {
-                    for(int s=0;s<kSliderCount;++s){m_sliderRect[s]=RECT{0,0,0,0};m_sliderTrack[s]=RECT{0,0,0,0};}
+                    for(int s=first;s<last;++s){m_sliderRect[s]=RECT{0,0,0,0};m_sliderTrack[s]=RECT{0,0,0,0};}
                 }
-                m_barFrames.push_back({RECT{px0-6,frameTop,px1+6,y},L"Levels",5,kGroupTint[5]});
+                m_barFrames.push_back({RECT{px0-6,frameTop,px1+6,y},sg?L"Color":L"Levels",group,kGroupTint[group]});
             }
             m_panelContentH=y+m_panelScroll+8;
             // A resize or a side switch must never leave the panel scrolled
@@ -1483,7 +1315,7 @@ private:
         case 5:return L"Mute / unmute";
         case 6:return L"Toggle the DLSS neural pass on or off";
         case 7:return L"Aspect: fit the frame or crop-fill the window";
-        case 8:return L"Open the Image Adjustments window (Ctrl+Alt+C)";
+        case 46:return L"NR Auto Mask: the model's own character mask (A/B). The Struct and Skin levels apply only while it is on.";
         case 9:return L"Generate a Depth Anything V2 depth map (<name>_depth.mp4) beside the movie. Playback and exports attach it automatically.";
         case 10:return L"View the motion-vector field fed to the neural pass (colors = direction, brightness = speed)";
         case 11:return L"Fullscreen";
@@ -1523,9 +1355,16 @@ private:
         case 102:return L"Pre-sharpen amount (before the neural pass)";
         case 103:return L"Post-sharpen amount (after the neural pass). Subtle at fit zoom - judge at 1:1.";
         case 104:return L"Tone preserve mix: 0 = raw neural output, 1 = original tone/colors fully restored";
-        case 105:return L"NR Smooth: motion-compensated temporal smoothing of the neural delta. EXPORT ONLY - no live preview.";
+        case 105:return L"NR Smooth: motion-compensated temporal smoothing of the neural delta, live and in exports.";
         case 106:return L"LUT strength";
         case 107:return L"SeedVR restoration strength (applies to the next SeedVR job)";
+        case 108:return L"NR Skin: structure strength on skin (0..2). Leftmost third = follow Struct; 0 = off on skin.";
+        case 109:return L"Brightness in EV stops (-2..+2), applied after the neural pass";
+        case 110:return L"Contrast (0..3) around middle grey";
+        case 111:return L"Saturation (0..3)";
+        case 112:return L"Gamma (0.25..3)";
+        case 113:return L"Colour temperature: -1 cool .. +1 warm";
+        case 114:return L"Tint: -1 green .. +1 magenta";
         case 40:return L"Export resolution for Export/Compare/Split: preview size, 3840 or 7680 long side, or Native (the source size - no upscale, the neural pass runs 1:1 on the original pixels). The neural pass runs per output pixel, so 8K is slow and VRAM-hungry.";
         case 41:return L"Export encoder: H.264 (x264, most compatible), HEVC or AV1 (NVENC hardware - strongly recommended for 4K/8K).";
         case 42:return L"Save the current frame as a PNG with all modifications applied (<name>_dlss5_frame_N.png). Works on paused video and imported still images.";
@@ -1621,7 +1460,7 @@ private:
         {SetBkMode(dc,TRANSPARENT);auto of=SelectObject(dc,m_fontSmall);
          const int oldExtra=SetTextCharacterExtra(dc,1);
          for(const BarFrame&f:m_barFrames)if(f.caption){
-            const bool open=f.group>=0&&f.group<6&&m_groupOpen[f.group];
+            const bool open=f.group>=0&&f.group<7&&m_groupOpen[f.group];
             const bool capHover=PtIn(RECT{f.r.left,f.r.top,f.r.right,f.r.top+24},m_mouseX,m_mouseY);
             SetTextColor(dc,capHover?Pal::Ink:Pal::Muted);
             std::wstring cap=f.caption;std::transform(cap.begin(),cap.end(),cap.begin(),::towupper);
@@ -1636,7 +1475,7 @@ private:
          SetTextCharacterExtra(dc,oldExtra);
          SelectObject(dc,of);}
         for(int i=0;i<kBtnCount;++i)if(!IsBarBtn(i)&&m_btnRect[i].right>m_btnRect[i].left)DrawButton(dc,m_btnRect[i],BtnLabel(i),BtnActive(i),BtnBusy(i),BtnIcon(i),BtnIconOnly(i),BtnRole(i),m_pressBtn==i);
-        // Levels: draggable strength sliders (mirrors the Adjustments window).
+        // Levels and Color: draggable sliders.
         // While a slider is dragged (or hovered), its label swaps to the live
         // numeric value so tuning is never blind.
         {auto of=SelectObject(dc,m_fontSmall);SetBkMode(dc,TRANSPARENT);
@@ -1656,7 +1495,7 @@ private:
             HBRUSH kb=CreateSolidBrush(s==m_dragSlider?Pal::Accent:Pal::Ink);auto okb=SelectObject(dc,kb),okp=SelectObject(dc,GetStockObject(NULL_PEN));
             Ellipse(dc,done.right-kr,cy-kr,done.right+kr+1,cy+kr+1);SelectObject(dc,okb);SelectObject(dc,okp);DeleteObject(kb);
             if(showVal){
-                wchar_t vbuf[16]{};swprintf_s(vbuf,L"%.2f",GetSliderVal(s)*kSliderMax[s]);
+                const std::wstring vtxt=SliderValueText(s);const wchar_t* vbuf=vtxt.c_str();
                 SIZE vs{};GetTextExtentPoint32W(dc,vbuf,int(wcslen(vbuf)),&vs);
                 RECT chip{done.right-vs.cx/2-6,cy-kr-17,done.right+vs.cx/2+6,cy-kr-3};
                 if(chip.left<wr.left){chip.right+=wr.left-chip.left;chip.left=wr.left;}
@@ -1714,12 +1553,11 @@ private:
         reg(HK_FORWARD_10,MOD_CONTROL|MOD_ALT,VK_RIGHT,"Ctrl+Alt+Right");
         reg(HK_MUTE,MOD_CONTROL|MOD_ALT,'M',"Ctrl+Alt+M");
         reg(HK_DLSS,MOD_CONTROL|MOD_ALT,'D',"Ctrl+Alt+D");
-        reg(HK_ADJUSTMENTS,MOD_CONTROL|MOD_ALT,'C',"Ctrl+Alt+C");
         if(!RegisterHotKey(m_hwnd,HK_MEDIA_PLAY_PAUSE,MOD_NOREPEAT,VK_MEDIA_PLAY_PAUSE))LOG("Media Play/Pause hotkey unavailable winerr="<<GetLastError());
     }
-    void UnregisterOverlayHotkeys(){if(!m_hwnd)return;for(int id:{HK_PLAY_PAUSE,HK_BACK_10,HK_FORWARD_10,HK_MUTE,HK_DLSS,HK_ADJUSTMENTS,HK_MEDIA_PLAY_PAUSE})UnregisterHotKey(m_hwnd,id);}
+    void UnregisterOverlayHotkeys(){if(!m_hwnd)return;for(int id:{HK_PLAY_PAUSE,HK_BACK_10,HK_FORWARD_10,HK_MUTE,HK_DLSS,HK_MEDIA_PLAY_PAUSE})UnregisterHotKey(m_hwnd,id);}
     void HandleHotkey(int id){
-        switch(id){case HK_PLAY_PAUSE:case HK_MEDIA_PLAY_PAUSE:TogglePause();break;case HK_BACK_10:RequestSeek(Position()-10);break;case HK_FORWARD_10:RequestSeek(Position()+10);break;case HK_MUTE:ToggleMute();break;case HK_DLSS:ToggleDLSS();break;case HK_ADJUSTMENTS:ShowAdjustments();break;}
+        switch(id){case HK_PLAY_PAUSE:case HK_MEDIA_PLAY_PAUSE:TogglePause();break;case HK_BACK_10:RequestSeek(Position()-10);break;case HK_FORWARD_10:RequestSeek(Position()+10);break;case HK_MUTE:ToggleMute();break;case HK_DLSS:ToggleDLSS();break;}
     }
 
     void OpenFromDialog(){auto p=PickVideoFile(m_hwnd,m_loc);if(!p.empty())Load(p);}
@@ -2023,7 +1861,6 @@ private:
         m_fxLut=true;m_fxSharpen=true;m_fxTone=true;m_fxFlow=true;m_fxDepth=true;m_fxMask=false;m_bypassFX=false;
         m_motionMode=0;
         SaveVideoSettings();ApplyVideoAdjustments(true);RefreshMenu();InvalidateControls();
-        if(m_adjustWnd&&IsWindow(m_adjustWnd))SyncAdjustmentControls(m_adjustWnd);
         LOG("Reset: all look controls back to defaults.");
     }
 
@@ -2131,7 +1968,7 @@ private:
         std::wstringstream ask;
         ask<<weightsNote<<L"Run the SeedVR2 restoration pass on this movie?\n\nUpscales to ~1080p short side and restores detail at strength "
            <<std::fixed<<std::setprecision(2)<<svrStrength
-           <<L"\n(tune via the SeedVR Strength slider in Adjustments; 1.0 = full SeedVR look).\nOutput keeps the source frame rate and audio. Expect a few minutes.";
+           <<L"\n(tune via the SVR slider in the Levels group; 1.0 = full SeedVR look).\nOutput keeps the source frame rate and audio. Expect a few minutes.";
         if(MessageBoxW(m_hwnd,ask.str().c_str(),T(L"app.title").c_str(),MB_YESNO|MB_ICONQUESTION)!=IDYES)return;
         std::wstringstream cmd;
         cmd<<L"\""<<python.wstring()<<L"\" \""<<script.wstring()<<L"\" \""<<m_path<<L"\" --strength "<<std::fixed<<std::setprecision(2)<<svrStrength;
@@ -2247,7 +2084,7 @@ private:
         // items can never swallow clicks meant for the bar/timeline.
         const bool inPanelArea=x>=PanelX0(cw)&&x<PanelX0(cw)+SIDE_W;
         if(inPanelArea)for(const BarFrame&f:m_barFrames){
-            if(f.group<0||f.group>=6)continue;
+            if(f.group<0||f.group>=7)continue;
             RECT cap{f.r.left,f.r.top,f.r.right,f.r.top+24};
             if(PtIn(cap,x,y)){m_groupOpen[f.group]=!m_groupOpen[f.group];SaveVideoSettings();InvalidateControls();return;}
         }
@@ -2276,7 +2113,7 @@ private:
         case 5:ToggleMute();break;
         case 6:ToggleDLSS();break;
         case 7:m_fill=!m_fill;Layout();break;
-        case 8:ShowAdjustments();break;
+        case 46:m_nrAutoMask=!m_nrAutoMask;ApplyVideoAdjustments(true);SaveVideoSettings();break;
         case 9:StartDepthMapGen();break;
         case 10:ToggleDebug(D3D12Renderer::DebugView::MotionVectors);break;
         case 11:ToggleFullscreen();break;
@@ -2628,7 +2465,7 @@ private:
         case WM_HOTKEY:HandleHotkey(int(w));return 0;
         case WM_KEYDOWN:
             if(w==VK_F1){OpenHelp();return 0;}
-            if((GetKeyState(VK_CONTROL)&0x8000)&&w=='O'){OpenFromDialog();return 0;}if((GetKeyState(VK_CONTROL)&0x8000)&&w=='E'){ShowAdjustments();return 0;}if(w==VK_SPACE){TogglePause();return 0;}if(w==VK_LEFT){RequestSeek(Position()-10);return 0;}if(w==VK_RIGHT){RequestSeek(Position()+10);return 0;}if(w==VK_F11){ToggleFullscreen();return 0;}if(w=='D'){ToggleDLSS();return 0;}if(w=='B'){ToggleBypass();return 0;}if(w=='G'){ToggleDepthMode();return 0;}if(w=='M'){ToggleMute();return 0;}if(w=='1'){SetDebug(D3D12Renderer::DebugView::Final);return 0;}if(w=='2'){SetDebug(D3D12Renderer::DebugView::Input);return 0;}if(w=='3'){SetDebug(D3D12Renderer::DebugView::MotionVectors);return 0;}if(w=='4'){SetDebug(D3D12Renderer::DebugView::Depth);return 0;}if(w=='5'){SetDebug(D3D12Renderer::DebugView::BiasMask);return 0;}if(w==VK_ESCAPE&&m_fullscreen){ToggleFullscreen();return 0;}break;
+            if((GetKeyState(VK_CONTROL)&0x8000)&&w=='O'){OpenFromDialog();return 0;}if(w==VK_SPACE){TogglePause();return 0;}if(w==VK_LEFT){RequestSeek(Position()-10);return 0;}if(w==VK_RIGHT){RequestSeek(Position()+10);return 0;}if(w==VK_F11){ToggleFullscreen();return 0;}if(w=='D'){ToggleDLSS();return 0;}if(w=='B'){ToggleBypass();return 0;}if(w=='G'){ToggleDepthMode();return 0;}if(w=='M'){ToggleMute();return 0;}if(w=='1'){SetDebug(D3D12Renderer::DebugView::Final);return 0;}if(w=='2'){SetDebug(D3D12Renderer::DebugView::Input);return 0;}if(w=='3'){SetDebug(D3D12Renderer::DebugView::MotionVectors);return 0;}if(w=='4'){SetDebug(D3D12Renderer::DebugView::Depth);return 0;}if(w=='5'){SetDebug(D3D12Renderer::DebugView::BiasMask);return 0;}if(w==VK_ESCAPE&&m_fullscreen){ToggleFullscreen();return 0;}break;
         }
         return DefWindowProcW(h,m,w,l);
     }
@@ -2657,11 +2494,11 @@ private:
         case IDM_MOTION_ZERO:m_motionMode=0;SaveVideoSettings();RefreshMenu();ApplyVideoAdjustments(true);break;
         case IDM_MOTION_GLOBAL:m_motionMode=1;SaveVideoSettings();RefreshMenu();ApplyVideoAdjustments(true);break;
         case IDM_MOTION_EST:m_motionMode=2;SaveVideoSettings();RefreshMenu();ApplyVideoAdjustments(true);break;
-        case IDM_VIEW_FINAL:SetDebug(D3D12Renderer::DebugView::Final);break;case IDM_VIEW_INPUT:SetDebug(D3D12Renderer::DebugView::Input);break;case IDM_VIEW_MV:SetDebug(D3D12Renderer::DebugView::MotionVectors);break;case IDM_VIEW_DEPTH:SetDebug(D3D12Renderer::DebugView::Depth);break;case IDM_VIEW_MASK:SetDebug(D3D12Renderer::DebugView::BiasMask);break;case IDM_DEPTH_MODE:ToggleDepthMode();break;case IDM_VIDEO_ADJUSTMENTS:ShowAdjustments();break;case IDM_ASPECT_FIT:m_fill=false;Layout();break;case IDM_ASPECT_FILL:m_fill=true;Layout();break;case IDM_FULLSCREEN:ToggleFullscreen();break;
+        case IDM_VIEW_FINAL:SetDebug(D3D12Renderer::DebugView::Final);break;case IDM_VIEW_INPUT:SetDebug(D3D12Renderer::DebugView::Input);break;case IDM_VIEW_MV:SetDebug(D3D12Renderer::DebugView::MotionVectors);break;case IDM_VIEW_DEPTH:SetDebug(D3D12Renderer::DebugView::Depth);break;case IDM_VIEW_MASK:SetDebug(D3D12Renderer::DebugView::BiasMask);break;case IDM_DEPTH_MODE:ToggleDepthMode();break;case IDM_ASPECT_FIT:m_fill=false;Layout();break;case IDM_ASPECT_FILL:m_fill=true;Layout();break;case IDM_FULLSCREEN:ToggleFullscreen();break;
         }
     }
 
-    AppOptions m_opt;Localizer m_loc;std::vector<std::wstring> m_languageCodes;D3D12Renderer::ColorSettings m_colorSettings{};DecodeScale m_activeScale=DecodeScale::Quality;HWND m_hwnd=nullptr,m_viewport=nullptr,m_renderWnd=nullptr,m_adjustWnd=nullptr;HFONT m_font=nullptr,m_fontSmall=nullptr,m_fontTitle=nullptr,m_fontHead=nullptr,m_fontIcon=nullptr;HBRUSH m_adjBrush=nullptr;
+    AppOptions m_opt;Localizer m_loc;std::vector<std::wstring> m_languageCodes;D3D12Renderer::ColorSettings m_colorSettings{};DecodeScale m_activeScale=DecodeScale::Quality;HWND m_hwnd=nullptr,m_viewport=nullptr,m_renderWnd=nullptr;HFONT m_font=nullptr,m_fontSmall=nullptr,m_fontTitle=nullptr,m_fontHead=nullptr,m_fontIcon=nullptr;
     bool m_running=true,m_loaded=false,m_playing=false,m_haveNext=false,m_fill=false,m_fullscreen=false,m_dragSeek=false,m_dragVolume=false,m_muted=false,m_seekPending=false,m_seekResumePlaying=false,m_seeking=false;
     LONG m_savedStyle=0;RECT m_savedRect{};double m_dar=16.0/9.0,m_currentSec=0,m_playStartSec=0,m_seekPreview=0,m_pendingSeekSec=0;float m_volume=1.0f;int m_mouseX=-999,m_mouseY=-999;
     Clock::time_point m_playStart=Clock::now(),m_fpsWindowStart=Clock::now(),m_lastStaticPresent=Clock::now();double m_submitFps=0.0;uint64_t m_fpsWindowFrames=0;std::wstring m_path;VideoDecoder m_decoder;VideoFrame m_next;std::unique_ptr<D3D12Renderer>m_renderer;std::unique_ptr<FramePipeline>m_pipeline;TemporalGuideGenerator::DepthMode m_depthMode=TemporalGuideGenerator::DepthMode::Estimated;AudioPlayer m_audio;
