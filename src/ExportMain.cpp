@@ -143,6 +143,8 @@ struct Options {
     float maskLayerS[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     float maskLayerT[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     float maskBgS = 0.0f, maskBgT = 0.0f;
+    float maskFeather = 0.0f;         // --mask-feather PX: soften the layer edges
+                                      // on the GPU before they reach the runtime
     bool nrGuidesExplicit = false;    // --nr-guides given: a mask file no longer binds itself
     std::wstring maskVideo;           // --mask-video (file mode): segmentation mask movie
                                       // (white = process here) driving DLSSNR.ControlMask
@@ -252,6 +254,9 @@ L"  --mask-layer F:S:T one segmentation layer (GenMask --layers writes one per\n
 L"                     phrase) with its structure and tone weights 0..1; up to\n"
 L"                     four, painted in order; replaces --mask-video\n"
 L"  --mask-bg S:T      structure and tone weights outside every layer (default 0:0)\n"
+L"  --mask-feather PX  soften the mask edges by PX output pixels (default 0). The\n"
+L"                     runtime reads the mask as weights, so this fades the effect\n"
+L"                     in instead of cutting it off at the outline\n"
 L"\n"
 L"4K / upscaling: pass --output-size (e.g. 3840x2194). The frame is resized to\n"
 L"that size and the neural pass redraws every output pixel 1:1.\n");
@@ -347,6 +352,7 @@ Options ParseArgs() {
             if (o.maskLayers.size() >= 4) fail(L"--mask-layer: at most four layers");
             else { o.maskLayerS[o.maskLayers.size()] = s; o.maskLayerT[o.maskLayers.size()] = t; o.maskLayers.push_back(spec); }
         }
+        else if (a == L"--mask-feather") { o.maskFeather = float(_wtof(next().c_str())); if (o.maskFeather < 0.0f) o.maskFeather = 0.0f; }
         else if (a == L"--mask-bg") {
             std::wstring spec = L"bg:" + next();
             float s = 0.0f, t = 0.0f;
@@ -717,6 +723,7 @@ struct Pipeline {
                 for (uint32_t k = 0; k < n; ++k) { layers[k].structure = o.maskLayerS[k]; layers[k].tone = o.maskLayerT[k]; }
             renderer.SetMaskLayers(layers, n, o.maskBgS, o.maskBgT);
         }
+        renderer.SetMaskFeather(o.maskFeather);
         renderer.SetNRMaskMode(o.nrMaskMode);
         renderer.SetNRMVScale(o.nrMVScale);
         // --mv zero must zero the FINAL MV field even when --flow-video is

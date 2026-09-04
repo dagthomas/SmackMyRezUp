@@ -87,6 +87,13 @@ public:
     // Preview aid: tints every enabled layer in its own colour over the final
     // picture (the same colours the Masks panel shows). Never in export mode.
     void SetMaskOverlay(bool on) { m_maskOverlay = on; }
+    // Softens the mask layers' edges by `px` OUTPUT pixels before they are
+    // composited into the ControlMask. The runtime reads that mask as a weight
+    // map, so a soft edge is a gradual falloff of structure and tone rather
+    // than a step - without it the boundary of a layer can read as a seam.
+    // Applied to the packed layer texture, so one blur covers every layer at
+    // once, and it costs nothing when 0. Live; shared by preview and export.
+    void SetMaskFeather(float px) { m_maskFeather = px > 0.0f ? px : 0.0f; }
 
     void SetDLSS(bool enabled) { m_dlssEnabled = enabled; }
     // Direct DLSS-NR knobs (feature 18 through NeuralEngine). Live-settable;
@@ -343,7 +350,8 @@ private:
     uint32_t m_maskLayerCount = 1;
     float m_maskBgStructure = 0.0f, m_maskBgTone = 0.0f;
     bool m_maskOverlay = false;
-    void MaskParams(float* out16, bool overlay) const;
+    float m_maskFeather = 0.0f;
+    void MaskParams(float* out20, bool overlay) const;
     float m_preSharpen = 0.0f;
     float m_postSharpen = 0.0f;
     bool m_deepInput = false;

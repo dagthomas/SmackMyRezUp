@@ -96,6 +96,27 @@ def reader(ffmpeg, path, W, H, gray=False):
         stdout=subprocess.PIPE)
 
 
+def feather_plane(mask, radius):
+    """Soften a mask exactly the way D3D12Renderer's Feather slider does.
+
+    The shader takes 25 bilinear taps on a 5x5 grid whose step is half the
+    radius, weighted by a gaussian of sigma 1.25 in tap units, so the kernel
+    reaches the full radius either side of the edge. Reproduced here on the CPU
+    so a preview shows the same falloff the neural pass is handed.
+    """
+    if radius <= 0.0:
+        return mask
+    step = max(1, int(round(radius * 0.5)))
+    acc = np.zeros_like(mask)
+    wsum = 0.0
+    for ty in range(-2, 3):
+        for tx in range(-2, 3):
+            k = float(np.exp(-0.5 * (tx * tx + ty * ty) / (1.25 * 1.25)))
+            acc += np.roll(np.roll(mask, ty * step, axis=0), tx * step, axis=1) * k
+            wsum += k
+    return np.clip(acc / max(wsum, 1e-5), 0.0, 1.0)
+
+
 def load_font(size):
     for p in (r"C:\Windows\Fonts\segoeui.ttf", r"C:\Windows\Fonts\arial.ttf"):
         if os.path.isfile(p):
@@ -135,6 +156,10 @@ def main():
     ap.add_argument("--mode", choices=("overlay", "matte", "split"), default="overlay")
     ap.add_argument("--layers", default=None,
                     help="comma-separated phrases to show, in order (default: all found)")
+    ap.add_argument("--feather", type=float, default=0.0,
+                    help="soften the layer edges by N pixels, using the same kernel the "
+                         "renderer's Feather slider applies, so the preview matches what "
+                         "the neural pass receives")
     ap.add_argument("--opacity", type=float, default=0.55, help="tint strength 0..1")
     ap.add_argument("--dim", type=float, default=0.82,
                     help="matte mode: how far the unmasked area is darkened 0..1")
@@ -199,8 +224,9 @@ def main():
             for m in masks:
                 mb = m.stdout.read(mbytes)
                 # A sidecar that runs short simply stops contributing.
-                planes.append(np.frombuffer(mb, np.uint8).reshape(H, W).astype(np.float32) / 255.0
-                              if len(mb) == mbytes else np.zeros((H, W), np.float32))
+                pl = (np.frombuffer(mb, np.uint8).reshape(H, W).astype(np.float32) / 255.0
+                      if len(mb) == mbytes else np.zeros((H, W), np.float32))
+                planes.append(feather_plane(pl, args.feather))
 
             if args.mode == "matte":
                 keep = np.zeros((H, W), np.float32)

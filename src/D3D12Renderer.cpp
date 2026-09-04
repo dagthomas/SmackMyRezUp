@@ -164,6 +164,8 @@ cbuffer Params:register(b0){
     // structure, background tone, layer count, overlay on; B = layers 0 and 1
     // as (structure, tone) pairs; C = layers 2 and 3; D = per-layer enables.
     float4 MaskA; float4 MaskB; float4 MaskC; float4 MaskD;
+    // MaskE: xy = feather step in uv (one output pixel * radius / 2), zw unused.
+    float4 MaskE;
 }
 struct V{float4 p:SV_Position;float2 uv:TEXCOORD0;};
 V VS(uint id:SV_VertexID){float2 uv=float2((id<<1)&2,id&2);V o;o.uv=uv;o.p=float4(uv.x*2-1,1-uv.y*2,0,1);return o;}
@@ -251,7 +253,7 @@ float3 SampleOutSharp(float2 uv){
 // them. Present stage only; the exporter never raises the flag.
 float3 MaskOverlay(float3 c,float2 uv){
     if(MaskA.w<0.5)return c;
-    float4 L=MaskLayers.SampleLevel(S,uv,0)*MaskD;
+    float4 L=saturate(MaskLayers.SampleLevel(S,uv,0))*MaskD;
     c=lerp(c,float3(0.20,0.85,0.45),L.r*0.5);
     c=lerp(c,float3(0.35,0.55,1.00),L.g*0.5);
     c=lerp(c,float3(1.00,0.85,0.25),L.b*0.5);
@@ -428,9 +430,26 @@ float4 PSMaskView(V i):SV_Target{return float4(saturate(T.SampleLevel(S,ZoomUV(i
     // and near-linear above, so the slider is mapped onto that range; the
     // master is raised wherever anything is asked for, and only a pixel
     // that wants neither structure nor tone is switched off entirely.
+    // Feathered read of the packed layer texture. All four layers live in the
+    // channels of ONE texture, so a single 5x5 bilinear-tap gaussian softens
+    // every layer at the same time; 25 taps keep a wide radius smooth instead
+    // of banding the way a 3x3 would. MaskE.xy is the step, already half the
+    // radius in uv, so the kernel spans the full radius either side.
+    float4 SampleLayers(float2 uv){
+        if(MaskE.x<=0.0&&MaskE.y<=0.0)return Aux1.SampleLevel(S,uv,0);
+        float4 acc=0.0;float wsum=0.0;
+        [unroll]for(int y=-2;y<=2;++y){
+            [unroll]for(int x=-2;x<=2;++x){
+                float k=exp(-0.5*float(x*x+y*y)/(1.25*1.25));
+                acc+=Aux1.SampleLevel(S,uv+float2(x,y)*MaskE.xy,0)*k;
+                wsum+=k;
+            }
+        }
+        return acc/max(wsum,1e-5);
+    }
     float4 ControlMask(float2 uv,float w){
         if(ColorA.y<0.5){float u=w>=0.5?1.0:0.0;float m=ColorA.x;u=m>=1.5?1.0-u:(m>=0.5?1.0:u);return MaskChannels(u);}
-        float4 L=saturate(Aux1.SampleLevel(S,uv,0))*MaskD;
+        float4 L=saturate(SampleLayers(uv))*MaskD;
         float st=MaskA.x,tn=MaskA.y;
         st=lerp(st,MaskB.x,L.r);tn=lerp(tn,MaskB.y,L.r);
         st=lerp(st,MaskB.z,L.g);tn=lerp(tn,MaskB.w,L.g);
@@ -460,7 +479,7 @@ float4 PSMaskView(V i):SV_Target{return float4(saturate(T.SampleLevel(S,ZoomUV(i
     D3D12_DESCRIPTOR_RANGE ovRange{};ovRange.RangeType=D3D12_DESCRIPTOR_RANGE_TYPE_SRV;ovRange.NumDescriptors=1;ovRange.BaseShaderRegister=5; // t5 = overlay label atlas
     D3D12_DESCRIPTOR_RANGE mlRange{};mlRange.RangeType=D3D12_DESCRIPTOR_RANGE_TYPE_SRV;mlRange.NumDescriptors=1;mlRange.BaseShaderRegister=6; // t6 = packed mask layers
     D3D12_ROOT_PARAMETER rp[5]{};rp[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;rp[0].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;rp[0].DescriptorTable.NumDescriptorRanges=1;rp[0].DescriptorTable.pDescriptorRanges=&range;
-    rp[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;rp[1].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;rp[1].Constants.Num32BitValues=32;rp[1].Constants.ShaderRegister=0;
+    rp[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;rp[1].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;rp[1].Constants.Num32BitValues=36;rp[1].Constants.ShaderRegister=0;
     rp[2].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;rp[2].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;rp[2].DescriptorTable.NumDescriptorRanges=1;rp[2].DescriptorTable.pDescriptorRanges=&lutRange;
     rp[3].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;rp[3].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;rp[3].DescriptorTable.NumDescriptorRanges=1;rp[3].DescriptorTable.pDescriptorRanges=&ovRange;
     rp[4].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;rp[4].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;rp[4].DescriptorTable.NumDescriptorRanges=1;rp[4].DescriptorTable.pDescriptorRanges=&mlRange;
@@ -834,7 +853,7 @@ void D3D12Renderer::SetMaskLayers(const MaskLayer* layers,uint32_t count,float b
     for(uint32_t k=0;k<kMaxMaskLayers;++k)m_maskLayers[k]=(layers&&k<m_maskLayerCount)?layers[k]:MaskLayer{};
     m_maskBgStructure=std::clamp(bgStructure,0.0f,1.0f);m_maskBgTone=std::clamp(bgTone,0.0f,1.0f);
 }
-// The 16 root constants behind MaskA..MaskD (see the shader's cbuffer).
+// The 20 root constants behind MaskA..MaskE (see the shader's cbuffer).
 void D3D12Renderer::MaskParams(float*o,bool overlay)const{
     o[0]=m_maskBgStructure;o[1]=m_maskBgTone;o[2]=float(m_maskLayerCount);o[3]=overlay?1.0f:0.0f;
     for(uint32_t k=0;k<kMaxMaskLayers;++k){
@@ -842,6 +861,12 @@ void D3D12Renderer::MaskParams(float*o,bool overlay)const{
         o[4+k*2]=std::clamp(l.structure,0.0f,1.0f);o[5+k*2]=std::clamp(l.tone,0.0f,1.0f);
         o[12+k]=(k<m_maskLayerCount&&l.enabled)?1.0f:0.0f;
     }
+    // Half the radius, in uv: the 5x5 kernel reaches two steps out, so the
+    // feather spans the full radius on each side of the edge.
+    const float step=m_maskFeather*0.5f;
+    o[16]=m_renderW?step/float(m_renderW):0.0f;
+    o[17]=m_renderH?step/float(m_renderH):0.0f;
+    o[18]=0.0f;o[19]=0.0f;
 }
 
 // Peak motion-vector magnitude of a frame in DLSS-input pixels, for the MV
@@ -933,7 +958,7 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
     // instead of the block-matcher uncertainty. Table 2 is bound unconditionally
     // so t1..t4 are valid on both expansion paths.
     const bool useExtMask=m_extMaskValid;
-    float guideParams[32]={jitterUVX,jitterUVY,0,0,float(m_nrMaskMode),useExtMask?1.0f:0.0f,0,0,0,0,0,0,
+    float guideParams[36]={jitterUVX,jitterUVY,0,0,float(m_nrMaskMode),useExtMask?1.0f:0.0f,0,0,0,0,0,0,
                            m_maskChannels[0],m_maskChannels[1],m_maskChannels[2],m_maskChannels[3]};
     MaskParams(guideParams+16,false);
     cmd->SetGraphicsRootDescriptorTable(2,SRVGPU(11));
@@ -950,7 +975,7 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
         cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(6));
         if(!m_exportMode)m_mvVisMax=PeakFlowGrid(guideGridRGBA32F,m_gridW,m_gridH);
     }
-    cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);cmd->SetGraphicsRoot32BitConstants(1,32,guideParams,0);cmd->DrawInstanced(3,1,0,0);
+    cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);cmd->SetGraphicsRoot32BitConstants(1,36,guideParams,0);cmd->DrawInstanced(3,1,0,0);
     Barrier(cmd,m_motion.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,GuideReadState);Barrier(cmd,m_biasCurrent.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,GuideReadState);m_guidesInRT=false;
 
     // Populate the exact depth resource passed to NGX. The resource is R32_TYPELESS,
@@ -1086,10 +1111,10 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
     const float zs=m_exportMode?1.0f:m_zoomScale;
     const float zx=std::clamp(m_zoomCX-zs*0.5f,0.0f,1.0f-zs);
     const float zy=std::clamp(m_zoomCY-zs*0.5f,0.0f,1.0f-zs);
-    float presentParams[32]={zx,zy,compareOn?(m_fxBypassIndicator?2.0f:1.0f):(toneActive?m_toneMix:0.0f),zs,cs.brightness,cs.contrast,cs.saturation,cs.gamma,cs.temperature,cs.tint,0,0,
+    float presentParams[36]={zx,zy,compareOn?(m_fxBypassIndicator?2.0f:1.0f):(toneActive?m_toneMix:0.0f),zs,cs.brightness,cs.contrast,cs.saturation,cs.gamma,cs.temperature,cs.tint,0,0,
                              compareOn?float(m_compareMode):0.0f,m_comparePos,applyColor?m_postSharpen:0.0f,std::max(m_mvVisMax,1.0f)};
     MaskParams(presentParams+16,m_maskOverlay&&!m_exportMode&&m_extMaskValid&&m_debugView==DebugView::Final);
-    cmd->SetGraphicsRoot32BitConstants(1,32,presentParams,0);
+    cmd->SetGraphicsRoot32BitConstants(1,36,presentParams,0);
     cmd->SetGraphicsRootDescriptorTable(4,SRVGPU(13)); // t6 = packed mask layers (a fallback view when none are armed)
     if(m_labelAtlas)cmd->SetGraphicsRootDescriptorTable(3,SRVGPU(16)); // t5 overlay labels (PSPresent)
     // DLSS inputs stay shader-readable for NGX. Only the texture selected for the
@@ -1231,10 +1256,10 @@ bool D3D12Renderer::PresentCurrent(){
     const float zs=m_exportMode?1.0f:m_zoomScale;
     const float zx=std::clamp(m_zoomCX-zs*0.5f,0.0f,1.0f-zs);
     const float zy=std::clamp(m_zoomCY-zs*0.5f,0.0f,1.0f-zs);
-    float presentParams[32]={zx,zy,compareOn?(m_fxBypassIndicator?2.0f:1.0f):(toneActive?m_toneMix:0.0f),zs,cs.brightness,cs.contrast,cs.saturation,cs.gamma,cs.temperature,cs.tint,0,0,
+    float presentParams[36]={zx,zy,compareOn?(m_fxBypassIndicator?2.0f:1.0f):(toneActive?m_toneMix:0.0f),zs,cs.brightness,cs.contrast,cs.saturation,cs.gamma,cs.temperature,cs.tint,0,0,
                              compareOn?float(m_compareMode):0.0f,m_comparePos,applyColor?m_postSharpen:0.0f,std::max(m_mvVisMax,1.0f)};
     MaskParams(presentParams+16,m_maskOverlay&&!m_exportMode&&m_extMaskValid&&m_debugView==DebugView::Final);
-    cmd->SetGraphicsRoot32BitConstants(1,32,presentParams,0);
+    cmd->SetGraphicsRoot32BitConstants(1,36,presentParams,0);
     cmd->SetGraphicsRootDescriptorTable(4,SRVGPU(13)); // t6 = packed mask layers (a fallback view when none are armed)
     if(m_labelAtlas)cmd->SetGraphicsRootDescriptorTable(3,SRVGPU(16)); // t5 overlay labels (PSPresent)
 

@@ -25,6 +25,8 @@
 9024 RCDATA "../tools/run_seedvr.py"
 9025 RCDATA "../tools/depth_probe.py"
 9026 RCDATA "../tools/trt_runtime.py"
+9027 RCDATA "../tools/sam3_compat.py"
+9028 RCDATA "../tools/make_mask_preview.py"
 // Sample grades for the LUT button.
 9030 RCDATA "../luts/identity.cube"
 9031 RCDATA "../luts/cine_teal_orange.cube"

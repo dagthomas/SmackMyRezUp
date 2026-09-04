@@ -254,6 +254,9 @@ static constexpr PayloadEntry kPayload[]={
     {9022,L"tools\\make_depth_video.py",true},{9023,L"tools\\make_mask_video.py",true},
     {9024,L"tools\\run_seedvr.py",true},{9025,L"tools\\depth_probe.py",true},
     {9026,L"tools\\trt_runtime.py",true},
+    // sam3_compat is imported by make_mask_video at module scope, so GenMask
+    // does not start without it, whether or not SAM 3.1 is configured.
+    {9027,L"tools\\sam3_compat.py",true},{9028,L"tools\\make_mask_preview.py",true},
     // Sample grades: extracted once and left alone, so an edited copy survives.
     {9030,L"luts\\identity.cube",false},{9031,L"luts\\cine_teal_orange.cube",false},
     {9032,L"luts\\cine_film_warm.cube",false},{9033,L"luts\\cine_bleach_bypass.cube",false},
@@ -486,6 +489,7 @@ private:
         // (measured), so it is an explicit A/B decision, never a surprise.
         m_fxMask=ReadSetting(L"FxMask",0.0f)>0.5f;
         m_maskPrompt=ReadSettingString(L"MaskPrompt");
+        m_maskFeather=std::clamp(ReadSetting(L"MaskFeather",0.0f),0.0f,32.0f);
         m_maskBgS=std::clamp(ReadSetting(L"MaskBgStruct",0.0f),0.0f,1.0f);
         m_maskBgT=std::clamp(ReadSetting(L"MaskBgTone",0.0f),0.0f,1.0f);
         for(int k=0;k<kMaxLayers;++k){
@@ -537,6 +541,7 @@ private:
         WriteSetting(L"PanelLeft",m_panelLeft?1.0f:0.0f);
         WriteSetting(L"MaskSensitivity",float(m_maskSensitivity));
         WritePrivateProfileStringW(smru::kSettingsSection,L"MaskPrompt",m_maskPrompt.c_str(),SettingsPath().c_str());
+        WriteSetting(L"MaskFeather",m_maskFeather);
         WriteSetting(L"MaskBgStruct",m_maskBgS);
         WriteSetting(L"MaskBgTone",m_maskBgT);
         for(int k=0;k<kMaxLayers;++k){
@@ -597,7 +602,8 @@ private:
             {D3D12Renderer::MaskLayer layers[kMaxLayers];
              for(int k=0;k<kMaxLayers;++k){layers[k].structure=m_layerS[k];layers[k].tone=m_layerT[k];layers[k].enabled=m_layerOn[k];}
              m_renderer->SetMaskLayers(layers,uint32_t(std::max(1,m_layerCount)),m_maskBgS,m_maskBgT);
-             m_renderer->SetMaskOverlay(m_maskOverlay&&m_maskLoaded);}
+             m_renderer->SetMaskOverlay(m_maskOverlay&&m_maskLoaded);
+             m_renderer->SetMaskFeather(m_maskFeather);}
             // Zero motion mode zeroes the FINAL MV field on the GPU too, so an
             // attached _flow.mp4 cannot bypass "zero vectors" into the NR MVec.
             m_renderer->SetMVFieldScale(m_motionMode==0?0.0f:1.0f);
@@ -1032,14 +1038,17 @@ private:
     // the -1 sentinel: follow Structure.
     // Sliders 15.. belong to the Masks group: background structure and tone,
     // then (structure, tone) per layer.
-    static constexpr int kSliderCount=25;
+    static constexpr int kSliderCount=26;
     static constexpr int kColorSliderFirst=9;   // sliders 9..14 form the Color group
     static constexpr int kMaskSliderFirst=15;
+    static constexpr int kLayerSliderFirst=17;  // 17 + 2k = layer k structure, +1 = tone
+    static constexpr int kFeatherSlider=25;     // last, so the layer stride stays 17 + 2k
     static constexpr const wchar_t* kSliderLabel[kSliderCount]={L"NR",L"Struct",L"Sharp",L"Post",L"Tone",L"Smooth",L"LUT",L"SVR",L"Skin",
                                                                 L"Bright",L"Contr",L"Sat",L"Gamma",L"Temp",L"Tint",
-                                                                L"Bg Str",L"Bg Tone",L"Struct",L"Tone",L"Struct",L"Tone",L"Struct",L"Tone",L"Struct",L"Tone"};
-    static constexpr float kSliderMin[kSliderCount]={0,0,0,0,0,0,0,0,-1, -2,0,0,0.25f,-1,-1, 0,0,0,0,0,0,0,0,0,0};
-    static constexpr float kSliderMax[kSliderCount]={1,2,1,1,1,1,1,1, 2,  2,3,3,3,    1, 1, 1,1,1,1,1,1,1,1,1,1};
+                                                                L"Bg Str",L"Bg Tone",L"Struct",L"Tone",L"Struct",L"Tone",L"Struct",L"Tone",L"Struct",L"Tone",
+                                                                L"Feather"};
+    static constexpr float kSliderMin[kSliderCount]={0,0,0,0,0,0,0,0,-1, -2,0,0,0.25f,-1,-1, 0,0,0,0,0,0,0,0,0,0, 0};
+    static constexpr float kSliderMax[kSliderCount]={1,2,1,1,1,1,1,1, 2,  2,3,3,3,    1, 1, 1,1,1,1,1,1,1,1,1,1, 32};
     RECT m_sliderRect[kSliderCount]{};RECT m_sliderTrack[kSliderCount]{};
     int m_dragSlider=-1;
     HWND m_tip=nullptr;int m_tipId=-1;
@@ -1062,8 +1071,11 @@ private:
         case 11:return m_colorSettings.saturation;case 12:return m_colorSettings.gamma;
         case 13:return m_colorSettings.temperature;case 14:return m_colorSettings.tint;
         case 15:return m_maskBgS;case 16:return m_maskBgT;
+        case kFeatherSlider:return m_maskFeather;
         }
-        if(s>=17&&s<kSliderCount){const int k=(s-17)/2;return (s-17)%2==0?m_layerS[k]:m_layerT[k];}
+        if(s>=kLayerSliderFirst&&s<kLayerSliderFirst+2*kMaxLayers){
+            const int k=(s-kLayerSliderFirst)/2;
+            return (s-kLayerSliderFirst)%2==0?m_layerS[k]:m_layerT[k];}
         return 0.0f;
     }
     float GetSliderVal(int s)const{
@@ -1102,8 +1114,13 @@ private:
         // Mask weights: touching one means "use the masks" - arm MaskNR.
         case 15:m_maskBgS=v;m_fxMask=true;break;
         case 16:m_maskBgT=v;m_fxMask=true;break;
+        case kFeatherSlider:m_maskFeather=v;m_fxMask=true;break;
         default:
-            if(s>=17&&s<kSliderCount){const int k=(s-17)/2;if((s-17)%2==0)m_layerS[k]=v;else m_layerT[k]=v;m_fxMask=true;}
+            if(s>=kLayerSliderFirst&&s<kLayerSliderFirst+2*kMaxLayers){
+                const int k=(s-kLayerSliderFirst)/2;
+                if((s-kLayerSliderFirst)%2==0)m_layerS[k]=v;else m_layerT[k]=v;
+                m_fxMask=true;
+            }
             break;
         }
         ApplyVideoAdjustments(true);InvalidateControls();
@@ -1344,7 +1361,7 @@ private:
                     y+=28;
                     if(m_layerCount>0){
                         auto slider=[&](int s){m_sliderRect[s]=RECT{px0+6,y,px1-6,y+20};m_sliderTrack[s]=RECT{px0+64,y+7,px1-14,y+13};y+=22;};
-                        slider(15);slider(16);
+                        slider(15);slider(16);slider(kFeatherSlider);
                         for(int k=0;k<m_layerCount;++k){
                             y+=4;
                             m_btnRect[49+k]=RECT{px0+6,y,px1-6,y+22};y+=26;
@@ -1416,6 +1433,7 @@ private:
         case 44:return m_maskLoaded?L"Bind the mask layers into the neural pass as its ControlMask (A/B toggle). While bound, the runtime's own automask is replaced: each layer gets the structure and tone below, everything outside them the Bg weights.":L"Bind the mask layers into the neural pass - needs <name>_mask.mp4 or <name>_mask_<phrase>.mp4 beside the movie (GenMask).";
         case 48:return L"Tint every enabled mask layer in its own colour over the preview (green, blue, yellow, magenta - the order below). Preview only, never exported.";
         case 49:case 50:case 51:case 52:return L"This layer on or off. Off = transparent: the pixels fall back to the layers below it, or to the Bg weights.";
+        case 100+kFeatherSlider:return L"Feather: soften the mask edges by up to 32 output pixels. The runtime reads the mask as weights, so this fades the neural effect in across the edge instead of cutting it off on the outline. 0 = hard edge.";
         case 115:return L"Structure weight outside every layer (0 = leave the background's detail alone)";
         case 116:return L"Tone weight outside every layer (0 = no relight on the background)";
         case 117:case 119:case 121:case 123:return L"Structure weight inside this layer: how much neural detail the object gets (the global Struct level still multiplies)";
@@ -1746,7 +1764,9 @@ private:
                 if(!m_layerOn[k])continue;
                 cmd<<L" --mask-layer \""<<m_layerPath[k]<<L":"<<std::fixed<<std::setprecision(2)<<m_layerS[k]<<L":"<<m_layerT[k]<<L"\"";
             }
-            cmd<<L" --mask-bg "<<std::fixed<<std::setprecision(2)<<m_maskBgS<<L":"<<m_maskBgT<<L" --nr-guides mv,mask";
+            cmd<<L" --mask-bg "<<std::fixed<<std::setprecision(2)<<m_maskBgS<<L":"<<m_maskBgT;
+            if(m_maskFeather>0.01f)cmd<<L" --mask-feather "<<std::fixed<<std::setprecision(1)<<m_maskFeather;
+            cmd<<L" --nr-guides mv,mask";
         }
         // The Color window and the DLSS toggle: forwarded whenever they differ
         // from the defaults, so the export is exactly what the preview showed.
@@ -2028,7 +2048,7 @@ private:
         m_nrIntensity=1.0f;m_nrLocalStructure=1.0f;m_nrSkinStructure=-1.0f;m_nrAutoMask=true;
         m_fxLut=true;m_fxSharpen=true;m_fxTone=true;m_fxFlow=true;m_fxDepth=true;m_fxMask=false;m_bypassFX=false;
         m_motionMode=2;
-        m_maskBgS=0.0f;m_maskBgT=0.0f;m_maskOverlay=false;
+        m_maskBgS=0.0f;m_maskBgT=0.0f;m_maskOverlay=false;m_maskFeather=0.0f;
         for(int k=0;k<kMaxLayers;++k){m_layerS[k]=1.0f;m_layerT[k]=1.0f;m_layerOn[k]=true;}
         SaveVideoSettings();ApplyVideoAdjustments(true);RefreshMenu();InvalidateControls();
         LOG("Reset: all look controls back to defaults.");
@@ -2710,7 +2730,7 @@ private:
     std::wstring m_layerName[kMaxLayers],m_layerPath[kMaxLayers];int m_layerCount=0;
     std::vector<uint8_t> m_maskPacked;
     float m_layerS[kMaxLayers]{1.0f,1.0f,1.0f,1.0f},m_layerT[kMaxLayers]{1.0f,1.0f,1.0f,1.0f};bool m_layerOn[kMaxLayers]{true,true,true,true};
-    float m_maskBgS=0.0f,m_maskBgT=0.0f;bool m_maskOverlay=false;
+    float m_maskBgS=0.0f,m_maskBgT=0.0f,m_maskFeather=0.0f;bool m_maskOverlay=false;
     bool m_maskLoaded=false;
     std::vector<uint8_t> m_depthPlane;
     HANDLE m_depthMapProc=nullptr;std::wstring m_depthMapForPath;

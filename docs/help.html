@@ -166,6 +166,7 @@
       <dt>MaskNR</dt><dd>Bind the layers into the neural pass (A/B toggle). While bound, the runtime's own automask is replaced by yours. Dragging any mask slider turns it on.</dd>
       <dt>Show masks</dt><dd>Tint every enabled layer in its own colour over the preview — green, blue, yellow, magenta in the panel's order. Preview only; exports never carry it.</dd>
       <dt>Bg Str · Bg Tone</dt><dd>Structure and tone weights for everything outside the layers. 0 / 0 leaves the background untouched, like NVIDIA's global controls at zero.</dd>
+      <dt>Feather</dt><dd>Softens every layer's edge by up to 32 output pixels. Because the runtime reads the mask as weights, this fades the neural effect in across the edge instead of cutting it off on the outline, which is what stops a mask boundary reading as a seam. Applied on the GPU to the packed layers, so one blur covers all of them and it costs nothing at 0. Watch it in the Mask view. Note that it also softens where two layers meet, cross-fading their strengths over those pixels. The generator's <code>--feather</code> is the separate, baked-in version.</dd>
       <dt>One pill + Struct + Tone per layer</dt><dd>The pill (with its colour swatch) turns the layer off — off means transparent, the pixels fall back to the layers below it or to the background weights. Struct is how much neural detail the object gets, Tone how much of the relight. Later layers paint over earlier ones where they overlap. The global Struct level still multiplies on top.</dd>
     </dl>
     <p class="measured">Measured response: the structure weight is dead below about 0.3 and near-linear above (the slider is mapped onto that range); tone at 0 still leaves about a quarter of the relight, and only a pixel that asks for neither is switched off entirely. Intensity remains a plain wet/dry blend on top of all of it.</p>
@@ -301,6 +302,7 @@ B = 32768</pre>
     <tr><td class="k"><code>--mv zero|global|estimated</code></td><td>Motion mode</td></tr>
     <tr><td class="k"><code>--flow-video --depth-video --mask-video</code></td><td>Attach guide files (a mask file binds the ControlMask by itself)</td></tr>
     <tr><td class="k"><code>--mask-layer F:S:T --mask-bg S:T</code></td><td>Per-object masks: up to four layers with their structure and tone weights (0–1), painted in order, and the weights outside them</td></tr>
+    <tr><td class="k"><code>--mask-feather PX</code></td><td>Soften the mask edges by PX output pixels (the Feather slider)</td></tr>
     <tr><td class="k"><code>--nr-guides off|on|all|mv,depth,mask</code></td><td>Which guides are bound (default: MVec only)</td></tr>
     <tr><td class="k"><code>--nr-mask-mode bias|white|inv</code></td><td>ControlMask content when bound without a mask video</td></tr>
     <tr><td class="k"><code>--tone preserve|nr --tone-mix X</code></td><td>Tone preserve and its mix</td></tr>
