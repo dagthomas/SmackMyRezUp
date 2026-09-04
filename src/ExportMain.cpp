@@ -254,9 +254,10 @@ L"  --mask-layer F:S:T one segmentation layer (GenMask --layers writes one per\n
 L"                     phrase) with its structure and tone weights 0..1; up to\n"
 L"                     four, painted in order; replaces --mask-video\n"
 L"  --mask-bg S:T      structure and tone weights outside every layer (default 0:0)\n"
-L"  --mask-feather PX  soften the mask edges by PX output pixels (default 0). The\n"
-L"                     runtime reads the mask as weights, so this fades the effect\n"
-L"                     in instead of cutting it off at the outline\n"
+L"  --mask-feather PX  soften the mask edges by PX output pixels, inward from the\n"
+L"                     outline so the mask never grows (default 0). The runtime\n"
+L"                     reads the mask as weights, so this fades the effect in\n"
+L"                     instead of cutting it off at the outline\n"
 L"\n"
 L"4K / upscaling: pass --output-size (e.g. 3840x2194). The frame is resized to\n"
 L"that size and the neural pass redraws every output pixel 1:1.\n");

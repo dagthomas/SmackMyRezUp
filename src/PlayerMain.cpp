@@ -489,7 +489,7 @@ private:
         // (measured), so it is an explicit A/B decision, never a surprise.
         m_fxMask=ReadSetting(L"FxMask",0.0f)>0.5f;
         m_maskPrompt=ReadSettingString(L"MaskPrompt");
-        m_maskFeather=std::clamp(ReadSetting(L"MaskFeather",0.0f),0.0f,32.0f);
+        m_maskFeather=std::clamp(ReadSetting(L"MaskFeather",0.0f),0.0f,16.0f);
         m_maskBgS=std::clamp(ReadSetting(L"MaskBgStruct",0.0f),0.0f,1.0f);
         m_maskBgT=std::clamp(ReadSetting(L"MaskBgTone",0.0f),0.0f,1.0f);
         for(int k=0;k<kMaxLayers;++k){
@@ -1048,7 +1048,7 @@ private:
                                                                 L"Bg Str",L"Bg Tone",L"Struct",L"Tone",L"Struct",L"Tone",L"Struct",L"Tone",L"Struct",L"Tone",
                                                                 L"Feather"};
     static constexpr float kSliderMin[kSliderCount]={0,0,0,0,0,0,0,0,-1, -2,0,0,0.25f,-1,-1, 0,0,0,0,0,0,0,0,0,0, 0};
-    static constexpr float kSliderMax[kSliderCount]={1,2,1,1,1,1,1,1, 2,  2,3,3,3,    1, 1, 1,1,1,1,1,1,1,1,1,1, 32};
+    static constexpr float kSliderMax[kSliderCount]={1,2,1,1,1,1,1,1, 2,  2,3,3,3,    1, 1, 1,1,1,1,1,1,1,1,1,1, 16};
     RECT m_sliderRect[kSliderCount]{};RECT m_sliderTrack[kSliderCount]{};
     int m_dragSlider=-1;
     HWND m_tip=nullptr;int m_tipId=-1;
@@ -1433,7 +1433,7 @@ private:
         case 44:return m_maskLoaded?L"Bind the mask layers into the neural pass as its ControlMask (A/B toggle). While bound, the runtime's own automask is replaced: each layer gets the structure and tone below, everything outside them the Bg weights.":L"Bind the mask layers into the neural pass - needs <name>_mask.mp4 or <name>_mask_<phrase>.mp4 beside the movie (GenMask).";
         case 48:return L"Tint every enabled mask layer in its own colour over the preview (green, blue, yellow, magenta - the order below). Preview only, never exported.";
         case 49:case 50:case 51:case 52:return L"This layer on or off. Off = transparent: the pixels fall back to the layers below it, or to the Bg weights.";
-        case 100+kFeatherSlider:return L"Feather: soften the mask edges by up to 32 output pixels. The runtime reads the mask as weights, so this fades the neural effect in across the edge instead of cutting it off on the outline. 0 = hard edge.";
+        case 100+kFeatherSlider:return L"Feather: soften the mask edges by up to 16 output pixels, INWARD from the outline - the mask never spreads onto background it did not already cover. The runtime reads the mask as weights, so this fades the neural effect in across the edge instead of cutting it off. 0 = hard edge.";
         case 115:return L"Structure weight outside every layer (0 = leave the background's detail alone)";
         case 116:return L"Tone weight outside every layer (0 = no relight on the background)";
         case 117:case 119:case 121:case 123:return L"Structure weight inside this layer: how much neural detail the object gets (the global Struct level still multiplies)";

@@ -91,8 +91,10 @@ public:
     // composited into the ControlMask. The runtime reads that mask as a weight
     // map, so a soft edge is a gradual falloff of structure and tone rather
     // than a step - without it the boundary of a layer can read as a seam.
-    // Applied to the packed layer texture, so one blur covers every layer at
-    // once, and it costs nothing when 0. Live; shared by preview and export.
+    // The falloff runs INWARD from the silhouette, so the mask never spreads
+    // onto background it did not already cover (see SampleLayers). Applied to
+    // the packed layer texture, so one blur covers every layer at once, and it
+    // costs nothing when 0. Live; shared by preview and export.
     void SetMaskFeather(float px) { m_maskFeather = px > 0.0f ? px : 0.0f; }
 
     void SetDLSS(bool enabled) { m_dlssEnabled = enabled; }

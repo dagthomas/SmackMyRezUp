@@ -435,6 +435,16 @@ float4 PSMaskView(V i):SV_Target{return float4(saturate(T.SampleLevel(S,ZoomUV(i
     // every layer at the same time; 25 taps keep a wide radius smooth instead
     // of banding the way a 3x3 would. MaskE.xy is the step, already half the
     // radius in uv, so the kernel spans the full radius either side.
+    //
+    // The feather is INWARD only. A plain gaussian is symmetric, so it grows
+    // the mask outward by as much as it softens it inward, painting a halo of
+    // weight over background the mask never covered. Remapping fixes that
+    // without a second pass: across an edge the blur passes through 0.5 exactly
+    // on the ORIGINAL silhouette, so (blur - 0.5) * 2 is 0 there, reaches 1 a
+    // radius inside, and goes negative outside, where the saturate clips it to
+    // nothing. The mask therefore never covers a pixel it did not cover before.
+    // A structure thinner than the radius has no deep interior and fades - that
+    // is inherent to feathering inward, not a defect.
     float4 SampleLayers(float2 uv){
         if(MaskE.x<=0.0&&MaskE.y<=0.0)return Aux1.SampleLevel(S,uv,0);
         float4 acc=0.0;float wsum=0.0;
@@ -445,7 +455,7 @@ float4 PSMaskView(V i):SV_Target{return float4(saturate(T.SampleLevel(S,ZoomUV(i
                 wsum+=k;
             }
         }
-        return acc/max(wsum,1e-5);
+        return saturate((acc/max(wsum,1e-5)-0.5)*2.0);
     }
     float4 ControlMask(float2 uv,float w){
         if(ColorA.y<0.5){float u=w>=0.5?1.0:0.0;float m=ColorA.x;u=m>=1.5?1.0-u:(m>=0.5?1.0:u);return MaskChannels(u);}
