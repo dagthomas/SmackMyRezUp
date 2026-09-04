@@ -4,8 +4,15 @@
 #   python make_mask_video.py <input.mp4> --prompt "human" --out mask.mp4
 #   python make_mask_video.py <input.mp4> --prompt "pitcher. grapes." --layers
 #
-# Two backends, chosen with --model (default auto: SAM 3 when it is reachable,
-# Grounding DINO + SAM 2.1 otherwise):
+# Three backends, chosen with --model (default auto: SAM 3.1 when its checkpoint
+# and the sam3 checkout are both present, then SAM 3, then the ungated pair):
+#
+#  * SAM 3.1 is the March 2026 release and the best of the three here. It is a
+#    VIDEO model: one text prompt on the first frame is tracked through the clip
+#    by its Object Multiplex tracker, so the mask stays on the object instead of
+#    being re-guessed every frame. It ships as checkpoints only, with no
+#    transformers integration, so it is built through Meta's own package - see
+#    sam3_compat.py for the checkout, the checkpoint and the compatibility work.
 #
 #  * SAM 3 has its own text encoder, so a phrase goes straight to pixel-accurate
 #    instance masks in one pass. Its weights are GATED on Hugging Face - request
@@ -32,11 +39,15 @@
 #
 # Masks are re-detected every --detect-every frames, carried unchanged in
 # between, and blended with the previous frame so a subject that flickers in and
-# out of the model does not strobe the mask.
-import argparse, os, re, subprocess, sys
+# out of the model does not strobe the mask. SAM 3.1 needs none of that: it
+# tracks natively, so that backend ignores --detect-every and the blending.
+import argparse, contextlib, os, re, subprocess, sys
 # ComfyUI's embedded Python does not put the script folder on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from smru_env import ffmpeg_tools
+import sam3_compat
+from smru_env import ensure_torch, ffmpeg_tools
+
+ensure_torch()   # hand over to an interpreter with torch when this one lacks it
 
 import numpy as np
 import torch
@@ -74,6 +85,19 @@ def normalize_prompt(text):
 def phrase_slug(phrase):
     """File-name-safe form of a phrase: 'red car' -> 'red_car'."""
     return re.sub(r"[^a-z0-9]+", "_", phrase.lower()).strip("_") or "phrase"
+
+
+def feather_mask(mask, radius):
+    """Cheap separable box blur; keeps soft edges the shader can use directly."""
+    if radius <= 0:
+        return mask
+    k = 2 * radius + 1
+    pad = np.pad(mask, radius, mode="edge")
+    cs = np.cumsum(pad, axis=0)
+    blur = (cs[k - 1:, :] - np.vstack([np.zeros((1, pad.shape[1]), np.float32), cs[:-k, :]])) / k
+    cs = np.cumsum(blur, axis=1)
+    blur = (cs[:, k - 1:] - np.hstack([np.zeros((blur.shape[0], 1), np.float32), cs[:, :-k]])) / k
+    return np.clip(blur, 0.0, 1.0)
 
 
 def union_masks(masks, H, W):
@@ -177,14 +201,144 @@ def sam2_detector(dev, args, caption, phrases, H, W):
     return detect
 
 
+
+def run_sam31(args, src, stem, out, phrases, W, H, fps, ffmpeg, encoder):
+    """The SAM 3.1 path: one tracked pass over the video per phrase.
+
+    Unlike the per-frame backends this model is prompted once, on frame 0, and
+    propagates its own masks forward, so there is no re-detection cadence and no
+    temporal blending to apply. Each phrase needs its own session: resetting one
+    and re-prompting it with different text was measured to leave the tracker
+    with no prompt at all.
+
+    Phrase layers are written straight to their encoders as the frames arrive.
+    The union has to combine phrases that are produced in separate passes, so it
+    accumulates in a memory-mapped scratch plane rather than in RAM, and is
+    encoded once at the end.
+    """
+    import tempfile
+
+    predictor = sam3_compat.build_predictor(args.sam31_ckpt,
+                                            max_num_objects=max(1, args.sam31_max_objects))
+
+    layer_paths, layer_enc = {}, {}
+    if args.layers:
+        for p in phrases:
+            path = f"{stem}_mask_{phrase_slug(p)}.mp4"
+            if path not in layer_enc:
+                layer_enc[path] = encoder(path)
+            layer_paths[p] = path
+        for path in layer_enc:
+            print(f"[maskgen] layer -> {path}", flush=True)
+
+    def write(enc, plane):
+        plane = feather_mask(plane, args.feather)
+        if args.invert:
+            plane = 1.0 - plane
+        enc.stdin.write((plane * 255.0 + 0.5).astype(np.uint8).tobytes())
+
+    tmp = tempfile.NamedTemporaryFile(prefix="smru_mask_union_", suffix=".raw", delete=False)
+    tmp.close()
+    union = None
+    total = 0
+    matched = {}
+    try:
+        with sam3_compat.autocast():
+            for phrase in phrases:
+                sid, frames = sam3_compat.start_session(predictor, src)
+                if union is None:
+                    total = frames
+                    union = np.memmap(tmp.name, dtype=np.uint8, mode="w+", shape=(max(total, 1), H, W))
+                    union[:] = 0
+                enc = layer_enc.get(layer_paths.get(phrase))
+                seen = 0
+                next_idx = 0
+
+                def emit(idx, plane):
+                    """Write frame `idx`, zero-filling any frames the tracker skipped."""
+                    nonlocal next_idx
+                    while next_idx < idx:
+                        if enc is not None:
+                            write(enc, np.zeros((H, W), np.float32))
+                        next_idx += 1
+                    if enc is not None:
+                        write(enc, plane)
+                    if idx < total:
+                        np.maximum(union[idx], (plane * 255.0 + 0.5).astype(np.uint8), out=union[idx])
+                    next_idx = idx + 1
+
+                try:
+                    predictor.handle_request(request=dict(
+                        type="add_prompt", session_id=sid, frame_index=0, text=phrase))
+                    for resp in predictor.handle_stream_request(request=dict(
+                            type="propagate_in_video", session_id=sid,
+                            propagation_direction="forward", start_frame_index=0)):
+                        m = resp["outputs"].get("out_binary_masks")
+                        if m is None or getattr(m, "size", 0) == 0:
+                            continue
+                        # (instances, ..., H, W) of bool -> one plane for the phrase
+                        u = np.asarray(m).astype(bool)
+                        while u.ndim > 2:
+                            u = u.any(axis=0)
+                        emit(int(resp["frame_index"]), u.astype(np.float32))
+                        seen += 1
+                        if seen % 30 == 0:
+                            print(f"[maskgen] {phrase}: frame {seen}", flush=True)
+                except RuntimeError as e:
+                    # A phrase that matches nothing anywhere leaves the tracker
+                    # without objects, and propagation raises rather than
+                    # yielding empties. An unmatched phrase is a legitimate
+                    # result: its layer is simply black.
+                    if "no points are provided" not in str(e).lower():
+                        raise
+                    print(f"[maskgen] {phrase!r} matched nothing; its layer is empty", flush=True)
+                finally:
+                    sam3_compat.close_session(predictor, sid)
+
+                while enc is not None and next_idx < total:      # pad to full length
+                    write(enc, np.zeros((H, W), np.float32))
+                    next_idx += 1
+                matched[phrase] = seen
+                print(f"[maskgen] {phrase}: {seen}/{total} frames tracked", flush=True)
+
+        enc_union = encoder(out)
+        for i in range(total):
+            write(enc_union, union[i].astype(np.float32) / 255.0)
+        enc_union.stdin.close()
+        for e in layer_enc.values():
+            e.stdin.close()
+        enc_union.wait()
+        for e in layer_enc.values():
+            e.wait()
+        rc = enc_union.returncode
+    finally:
+        union = None
+        with contextlib.suppress(OSError):
+            os.unlink(tmp.name)
+
+    if not any(matched.values()):
+        print(f"[maskgen] WARNING: nothing matched in any frame; the mask is empty. "
+              f"Try simpler phrases.", flush=True)
+    print(f"[maskgen] done frames={total} backend=SAM 3.1 -> {out}", flush=True)
+    return 0 if total > 0 and rc == 0 else 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("input")
     ap.add_argument("--prompt", default="person",
                     help='what to segment, e.g. "person. face." (periods or commas separate phrases)')
     ap.add_argument("--out", default=None)
-    ap.add_argument("--model", choices=("auto", "sam3", "sam2"), default="auto",
-                    help="auto = SAM 3 when reachable, Grounding DINO + SAM 2.1 otherwise")
+    ap.add_argument("--model", choices=("auto", "sam31", "sam3", "sam2"), default="auto",
+                    help="auto = SAM 3.1 when its checkpoint is present, else SAM 3, "
+                         "else Grounding DINO + SAM 2.1")
+    ap.add_argument("--sam31-max-objects", type=int, default=16,
+                    help="SAM 3.1 only: instances tracked per phrase. The tracker "
+                         "DROPS new detections once this is full, so raise it for "
+                         "crowds (costs memory and time roughly linearly)")
+    ap.add_argument("--sam31-ckpt", default=None,
+                    help="SAM 3.1 checkpoint (default: SMRU_SAM31_CKPT, or "
+                         "sam3.1_multiplex.pt in the models folder)")
     ap.add_argument("--threshold", type=float, default=0.30,
                     help="match confidence (lower = more, looser detections); "
                          "SAM 3's instance score, or Grounding DINO's box score")
@@ -227,6 +381,28 @@ def main():
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    def encoder(path):
+        return subprocess.Popen([ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                                 "-f", "rawvideo", "-pix_fmt", "gray", "-video_size", f"{W}x{H}",
+                                 "-framerate", f"{fps}", "-i", "-",
+                                 "-c:v", "libx264", "-preset", "fast", "-crf", "6",
+                                 "-pix_fmt", "yuv420p", path],
+                                stdin=subprocess.PIPE)
+
+    # SAM 3.1 is preferred when it is set up: it is a video model, so one prompt
+    # on frame 0 is tracked through the clip instead of being re-guessed per
+    # frame, and it needs neither --detect-every nor the temporal blending. A
+    # missing checkout or checkpoint is not an error under `auto`, it just means
+    # the older backends handle the job; a failure INSIDE the run is reported,
+    # because silently producing a worse mask after minutes of work is worse.
+    if args.model == "sam31" or (args.model == "auto" and sam3_compat.available()):
+        try:
+            return run_sam31(args, src, stem, out, phrases, W, H, fps, ffmpeg, encoder)
+        except (FileNotFoundError, ImportError) as e:
+            if args.model == "sam31":
+                sys.exit(f"[maskgen] SAM 3.1 is not set up: {e}")
+            print(f"[maskgen] SAM 3.1 is not set up ({e}); using an older backend.", flush=True)
+
     detect = None
     if args.model in ("auto", "sam3"):
         print("[maskgen] loading SAM 3 (first run downloads the weights)...", flush=True)
@@ -249,14 +425,6 @@ def main():
         detect = sam2_detector(dev, args, caption, phrases, H, W)
         backend = "Grounding DINO + SAM 2.1"
     print(f"[maskgen] backend={backend} threshold={args.threshold:g}", flush=True)
-
-    def encoder(path):
-        return subprocess.Popen([ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-                                 "-f", "rawvideo", "-pix_fmt", "gray", "-video_size", f"{W}x{H}",
-                                 "-framerate", f"{fps}", "-i", "-",
-                                 "-c:v", "libx264", "-preset", "fast", "-crf", "6",
-                                 "-pix_fmt", "yuv420p", path],
-                                stdin=subprocess.PIPE)
 
     dec = subprocess.Popen([ffmpeg, "-hide_banner", "-loglevel", "error", "-i", src,
                             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
@@ -282,21 +450,9 @@ def main():
             np.maximum(merged, m, out=merged)
         return merged
 
-    def feather(mask, radius):
-        """Cheap separable box blur; keeps soft edges the shader can use directly."""
-        if radius <= 0:
-            return mask
-        k = 2 * radius + 1
-        pad = np.pad(mask, radius, mode="edge")
-        cs = np.cumsum(pad, axis=0)
-        blur = (cs[k - 1:, :] - np.vstack([np.zeros((1, pad.shape[1]), np.float32), cs[:-k, :]])) / k
-        cs = np.cumsum(blur, axis=1)
-        blur = (cs[:, k - 1:] - np.hstack([np.zeros((blur.shape[0], 1), np.float32), cs[:, :-k]])) / k
-        return np.clip(blur, 0.0, 1.0)
-
     def finish(mask, prev, reset):
         """Feather and temporally blend one mask plane; returns the new plane."""
-        mask = feather(mask, args.feather)
+        mask = feather_mask(mask, args.feather)
         if prev is not None and not reset:
             mask = prev * MASK_HISTORY + mask * (1.0 - MASK_HISTORY)
         return mask

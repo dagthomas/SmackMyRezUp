@@ -37,7 +37,9 @@
 import argparse, os, subprocess, sys
 # ComfyUI's embedded Python does not put the script folder on sys.path.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from smru_env import ffmpeg_tools
+from smru_env import ensure_torch, ffmpeg_tools
+
+ensure_torch()   # hand over to an interpreter with torch when this one lacks it
 
 import numpy as np
 import torch

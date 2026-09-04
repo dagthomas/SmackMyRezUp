@@ -26,7 +26,7 @@ Key measured facts baked into the defaults:
 - **Neural controls**: model A/B/C, intensity, structure, skin, automask — all live per-frame; motion modes Zero / Global pan / Estimated (RAFT flow sidecar).
 - **A/B tooling**: draggable vertical/horizontal split comparing the **pure original** against the full pipeline, with DLSS ON/OFF and FX ON/BYPASS labels; per-effect toggles and a Bypass-All key (B); debug views for the MV field, depth guide and uncertainty mask; inspection zoom.
 - **Effects**: .cube LUT (right-click the LUT button to remove it), pre/post-sharpen, tone preserve, NR-delta smoothing (live and in exports).
-- **Sidecar generators** (Python with torch, see *Configuration*): `GenFlow` (RAFT optical flow), `GenDepth` (Depth Anything V2) and `GenMask` (text-prompted segmentation - SAM 3, falling back to Grounding DINO + SAM 2.1 when SAM 3's gated weights are not reachable: type `person. face. hair.`, get `<name>_mask.mp4` plus one `<name>_mask_<phrase>.mp4` per phrase); `<name>_flow.mp4` / `<name>_depth.mp4` / `<name>_mask.mp4` auto-attach to playback and exports. The mask is only *bound* into the neural pass while the **MaskNR** toggle is on (preview and export alike) — A/B against MaskNR off, never against a blank mask. Flow and depth take `--backend trt` to run through TensorRT (see *Optional: TensorRT*). Optional SeedVR restoration pre-pass (`<name>_svr.mp4`).
+- **Sidecar generators** (Python with torch, see *Configuration*): `GenFlow` (RAFT optical flow), `GenDepth` (Depth Anything V2) and `GenMask` (text-prompted segmentation - SAM 3.1, falling back to SAM 3 and then to Grounding DINO + SAM 2.1: type `person. face. hair.`, get `<name>_mask.mp4` plus one `<name>_mask_<phrase>.mp4` per phrase, which become the per-object layers in the **Masks** panel group); `<name>_flow.mp4` / `<name>_depth.mp4` / `<name>_mask.mp4` auto-attach to playback and exports. The mask is only *bound* into the neural pass while the **MaskNR** toggle is on (preview and export alike) — A/B against MaskNR off, never against a blank mask. Flow and depth take `--backend trt` to run through TensorRT (see *Optional: TensorRT*). Optional SeedVR restoration pre-pass (`<name>_svr.mp4`).
 - **Export resolution**: the Res cycle offers preview size, 4K, 8K and **Native** — the source size with no upscale, so the neural pass redraws the original pixels 1:1 (the exporter auto-picks DLAA).
 - **Exports**: Export / Compare / Split / 4K, resolution selector (preview / 4K / 8K long side), codec selector (x264, NVENC HEVC, NVENC AV1), processed-frame PNG snapshot, side-by-side comparison shots. Audio is muxed back from the source. Default names are `<name>_rezup.mp4`, `<name>_rezup_compare.mp4`, `<name>_rezup_4k.mp4`, `<name>_rezup_split.mp4` and `<name>_shot_N.png`.
 - **UI**: collapsible, color-coded control groups with hover tooltips, uniform button grid, live-value sliders. English strings are compiled in.
@@ -93,6 +93,18 @@ Downloaded model weights land in `models\` **beside the exe** (`models\huggingfa
 
 Nothing in the code depends on where the checkout lives: `tools\` and `luts\` are found beside the exe or by walking up from `build\Release\`.
 
+## Optional: SAM 3.1
+
+SAM 3.1 (March 2026) is the best mask backend here and the one `GenMask` prefers. Unlike SAM 3 it ships as **checkpoints only**, with no `transformers` integration, so it needs Meta's own package:
+
+```
+git clone --depth 1 https://github.com/facebookresearch/sam3.git external\sam3
+```
+
+Then put `sam3.1_multiplex.pt` (3.5 GB, gated - request access at [huggingface.co/facebook/sam3.1](https://huggingface.co/facebook/sam3.1)) in `models\` beside the exe, or point `SMRU_SAM31_CKPT` at it. `tools\sam3_compat.py` handles the rest in-process, so nothing is installed into or downgraded in the interpreter ComfyUI shares.
+
+It is a **video** model: a phrase is prompted once on frame 0 and its own tracker propagates the mask through the clip, so it ignores `--detect-every` and needs no temporal blending. One pass per phrase; measured on a 240-frame 720p clip, about 30 s per phrase at the default 16-instance budget and 45 s at 48. `--sam31-max-objects` is a hard ceiling rather than a hint - once full the tracker drops NEW detections, so a crowd prompted with `person` keeps only the instances it locked onto first (measured: 16 tracked the foreground pair and 214/240 frames, 48 tracked the whole crew and 240/240).
+
 ## Optional: TensorRT
 
 `make_depth_video.py --backend trt` and `make_flow_video.py --backend trt` run the same models through TensorRT instead of PyTorch. Measured on an RTX 5090: Depth Anything V2 Small 5.3 → 1.3 ms per frame, RAFT-small 15 → 5–7 ms, with sidecars that match the torch backend (depth to 0.05 of 255 levels on average; flow to 0.07 px). Needs the CUDA Toolkit, the TensorRT SDK (`bin` on `PATH` or `SMRU_TENSORRT_DIR`) and its Python wheel installed into the tools interpreter (`pip install --no-deps <TensorRT>\python\tensorrt-*-cp3XX-none-win_amd64.whl`), plus `onnx` and `onnxscript` for the export.
@@ -126,7 +138,9 @@ tools/
   smru_env.py             shared helper: finds ffmpeg/ffprobe/exporter/ComfyUI
   make_flow_video.py      RAFT optical-flow sidecar   (<name>_flow.mp4)
   make_depth_video.py     Depth Anything V2 sidecar   (<name>_depth.mp4)
-  make_mask_video.py      Text-prompted segmentation sidecar, SAM 3 or SAM 2.1 (<name>_mask.mp4)
+  make_mask_video.py      Text-prompted segmentation sidecar, SAM 3.1 / 3 / 2.1 (<name>_mask.mp4)
+  sam3_compat.py          Runs Meta's SAM 3.1 package in this project's Python
+  make_mask_preview.py    Mask preview movie: the original video with its masks drawn on
   trt_runtime.py          TensorRT: locate the SDK, build/cache/verify engines, run them
   run_seedvr.py           SeedVR2 restoration pre-pass (<name>_svr.mp4)
   depth_probe.py          checks whether the runtime consumes depth
