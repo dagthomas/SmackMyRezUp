@@ -73,6 +73,14 @@ bool FramePipeline::Render(const uint8_t* frame, size_t bytes, bool reset, const
     const float* grid = g.guideGridRGBA32F.data();
     const size_t gridBytes = g.guideGridRGBA32F.size() * sizeof(float);
 
+    // No correspondence to the previous frame (a cut, a fresh history, and the
+    // extra renders of the same frame below): the temporal stages get zero
+    // vectors whatever the field says. The grid is already zero in that case;
+    // an external flow frame is not - across a cut it is RAFT's guess between
+    // two unrelated pictures, and it would warp the converging history of the
+    // warmup renders, which are the SAME frame and have no motion at all.
+    m_renderer.SetMotionInvalid(!g.hasHistory);
+
     // Micro-warmup: a bare reset trades ghosting for one or two visibly softer
     // frames (fresh history). Converge the new history on this frame with extra
     // discarded renders first, then let the kept render continue it.
@@ -88,6 +96,19 @@ bool FramePipeline::Render(const uint8_t* frame, size_t bytes, bool reset, const
     return m_renderer.RenderFrame(frame, bytes, grid, gridBytes, g.gridW, g.gridH,
                                   reset, sc.depth, sc.depthBytes,
                                   sc.flow, sc.flowBytes, sc.mask, sc.maskBytes);
+}
+
+void PackMaskLayers(const uint8_t* const* layersBGRA, uint32_t count,
+                    uint32_t w, uint32_t h, std::vector<uint8_t>& out) {
+    const size_t px = size_t(w) * h;
+    out.assign(px * 4, 0);
+    static constexpr int kByte[4] = {2, 1, 0, 3};   // BGRA byte order: R, G, B, A
+    for (uint32_t k = 0; k < count && k < 4; ++k) {
+        const uint8_t* src = layersBGRA ? layersBGRA[k] : nullptr;
+        if (!src) continue;
+        uint8_t* dst = out.data() + kByte[k];
+        for (size_t i = 0; i < px; ++i) dst[i * 4] = src[i * 4 + 1];
+    }
 }
 
 void DepthGrayToR16(const uint8_t* bgra, uint32_t w, uint32_t h, std::vector<uint8_t>& out) {

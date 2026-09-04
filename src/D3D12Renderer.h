@@ -72,6 +72,21 @@ public:
     // threshold. SetNRMaskMode still selects as-is / white / inverted, so the
     // two sources A/B against each other. Enable BEFORE Initialize().
     void EnableExternalMask() { m_useExtMask = true; }
+    // Per-object control on top of the runtime's ONE ControlMask. The mask
+    // frame handed to RenderFrame carries up to four segmentation LAYERS
+    // packed one per channel (PackMaskLayers in FramePipeline.h); the guide
+    // expansion composites them with these weights into the RGB weight map
+    // the runtime was measured to read (R = master, G = tone, B = structure).
+    // Background pixels get the bg weights; each layer paints its own over
+    // them by its alpha, later layers on top. Default: one layer at full
+    // weight over an untouched background - "white = process here".
+    // Live-settable; read at every guide expansion.
+    struct MaskLayer { float structure = 1.0f; float tone = 1.0f; bool enabled = true; };
+    static constexpr uint32_t kMaxMaskLayers = 4;
+    void SetMaskLayers(const MaskLayer* layers, uint32_t count, float bgStructure, float bgTone);
+    // Preview aid: tints every enabled layer in its own colour over the final
+    // picture (the same colours the Masks panel shows). Never in export mode.
+    void SetMaskOverlay(bool on) { m_maskOverlay = on; }
 
     void SetDLSS(bool enabled) { m_dlssEnabled = enabled; }
     // Direct DLSS-NR knobs (feature 18 through NeuralEngine). Live-settable;
@@ -81,19 +96,31 @@ public:
     void SetNRSettings(const NeuralEngine::Settings& s) { m_nrSettings = s; }
     // Bind guide textures to the NR evaluation (the runtime answers to
     // DLSSNR.MVec/Depth/ControlMask). Bitmask: 1 = MVec, 2 = Depth, 4 =
-    // ControlMask; 0 = the historical colour-only evaluate. Binding the
-    // ControlMask was measured to SUPPRESS the neural effect (a zero mask
-    // reads as "leave everything"), so the default is MVec only.
+    // ControlMask; 0 = the historical colour-only evaluate. The ControlMask
+    // is an RGB weight map (measured 2026-09-04: R = master, G = tone, B =
+    // structure, an all-ones mask equals "no mask, automask off"); binding it
+    // replaces the runtime's automask, so it stays an explicit choice and the
+    // default is MVec only.
     void SetNRGuideMask(uint32_t m) { m_nrGuideMask = m; }
     // What the bias/ControlMask texture carries: 0 = raw uncertainty bias,
     // 1 = white (process everywhere), 2 = inverted (process where confident).
     // Applies to the GPU guide expansion, so the Mask debug view shows exactly
     // what would be fed to the runtime.
     void SetNRMaskMode(uint32_t m) { m_nrMaskMode = m; }
-    // Scale reported for DLSSNR.MVecScaleX/Y. Default -1: the runtime reads
-    // MVec with the opposite sign of our current->previous field (measured:
-    // +1 turns real flow into 1.4px background lurches, -1 removes them).
+    // Scale reported for DLSSNR.MVecScaleX/Y. Default +1: the runtime reads
+    // MVec in the DLSS convention, current -> previous in input pixels, the
+    // same sign DLSS SR takes our field with. Measured (2026-09-04) on a
+    // synthetic pan with exact vectors: +1 keeps the output 2.5x more stable
+    // along the true motion than zero vectors; -1 (the earlier default) warps
+    // the history the wrong way and lands BELOW zero vectors.
     void SetNRMVScale(float s) { m_nrMVScale = s; }
+    // This frame has no valid correspondence to the previous one (a cut, the
+    // first frame after a seek, or an extra render of the same frame that
+    // converges a fresh history): every temporal stage receives zero vectors
+    // whatever the field holds. The block matcher zeroes its own grid in that
+    // case; an external flow frame across a cut is a guess between two
+    // unrelated pictures and must be overridden here. Live, per frame.
+    void SetMotionInvalid(bool invalid) { m_motionInvalid = invalid; }
     // Gate on the FINAL MV field the guide expansion writes (0 = force zero,
     // 1 = pass through). Zero motion mode must zero the field even when an
     // external flow texture bypasses the CPU-side grid override. Live-settable.
@@ -249,6 +276,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoConvertLUT;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoPresent;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoMotionDebug;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoMaskDebug;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoDepthDebug;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoDepthWrite;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoDepthWriteExt;
@@ -299,9 +327,23 @@ private:
     uint32_t m_nrGuideMask = 1;
     uint32_t m_nrMaskMode = 0;
     bool m_fxBypassIndicator = false;
-    float m_nrMVScale = -1.0f;
+    float m_nrMVScale = 1.0f;
     float m_mvVisMax = 1.0f; // this frame's peak |MV| in DLSS-input px; scales the MV debug view
     float m_mvFieldScale = 1.0f;
+    bool m_motionInvalid = false;
+    // ControlMask resource layout (SMRU_MASK_PROBE=<format>:<channels> overrides
+    // it for experiments, see ReadMaskProbe in the .cpp). RGBA8: the runtime
+    // reads R = master, G = tone, B = structure; a single-channel resource
+    // leaves G and B at zero and switches the whole effect off. The channel
+    // codes only shape the built-in (block-matcher) source: master = its
+    // confidence, tone and structure full.
+    DXGI_FORMAT m_maskFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+    float m_maskChannels[4] = {2.0f, 1.0f, 1.0f, 1.0f};
+    MaskLayer m_maskLayers[kMaxMaskLayers];
+    uint32_t m_maskLayerCount = 1;
+    float m_maskBgStructure = 0.0f, m_maskBgTone = 0.0f;
+    bool m_maskOverlay = false;
+    void MaskParams(float* out16, bool overlay) const;
     float m_preSharpen = 0.0f;
     float m_postSharpen = 0.0f;
     bool m_deepInput = false;

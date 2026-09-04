@@ -88,3 +88,10 @@ private:
 // A decoded _depth.mp4 frame (gray, bright = near) as the R16 plane the
 // renderer's external-depth input wants (0 = near).
 void DepthGrayToR16(const uint8_t* bgra, uint32_t w, uint32_t h, std::vector<uint8_t>& out);
+
+// Up to four decoded segmentation-layer frames (gray BGRA, white = the object)
+// packed into the one BGRA8 plane the renderer's mask input takes: layer 0 in
+// R, 1 in G, 2 in B, 3 in A. A null or missing layer is transparent. The
+// renderer composites them with per-layer weights (D3D12Renderer::SetMaskLayers).
+void PackMaskLayers(const uint8_t* const* layersBGRA, uint32_t count,
+                    uint32_t w, uint32_t h, std::vector<uint8_t>& out);

@@ -1,6 +1,6 @@
 # Generate a RAFT optical-flow video for a movie.
 #
-#   python make_flow_video.py <input.mp4> [--size 512] [--out <path>]
+#   python make_flow_video.py <input.mp4> [--size 1024] [--out <path>]
 #   python make_flow_video.py <input.mp4> --backend trt        (TensorRT)
 #
 # For each frame t, computes flow t -> t-1 (current pixel's displacement to its
@@ -10,12 +10,21 @@
 #   full code range (mid-code = zero motion), B = mid-grey. First frame is
 #   zero flow. The range (--range, default 64 px) is written into the file as
 #   the smru_flow_range metadata tag, which the player and exporter read back.
-# Written as <stem>_flow.mp4 (yuv444p10le, near-lossless): 10 bits over
+# Written as <stem>_flow.mp4 (yuv444p10le, x264 -qp 4): 10 bits over
 # +/-64 px is a 0.15 px step, finer than the old 8-bit +/-24 px file (0.19 px)
 # with 2.7x the reach - a handheld pan at 720p passes 24 px/frame easily, and
-# a clamped vector is a wrong vector. SmackMyRezUp and SmackMyRezUpExport
-# decode this and feed it as the per-pixel MV field, replacing the noisy CPU
-# block matcher.
+# a clamped vector is a wrong vector. The quantiser is fixed rather than
+# rate-controlled: measured on a field with sharp motion boundaries, crf 6
+# leaves 0.1% of the vectors more than 1 px off (ringing up to 12 px at the
+# edges of moving objects, which is where the neural pass needs them most);
+# -qp 4 keeps every vector within 0.75 px at ~2.3x the file size, and -qp 0
+# (lossless) would cost 5.7x. SmackMyRezUp and SmackMyRezUpExport decode this
+# and feed it as the per-pixel MV field, replacing the noisy CPU block matcher.
+#
+# The default inference size is a 1024 px long side: measured on 720p handheld
+# footage the 1024 field keeps the neural output more stable along the motion
+# than 512 (warp error 4.43 vs 4.56 on a 4.15 floor) at the same wall time,
+# which is dominated by the decode and encode rather than RAFT.
 #
 # --backend trt compiles RAFT into a TensorRT engine on first use (cached under
 # engines/, keyed by inference size, GPU and TensorRT version) and runs that
@@ -132,7 +141,7 @@ class TrtBackend:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("input")
-    ap.add_argument("--size", type=int, default=512, help="inference long side")
+    ap.add_argument("--size", type=int, default=1024, help="inference long side")
     ap.add_argument("--out", default=None)
     ap.add_argument("--backend", choices=("torch", "trt"), default="torch",
                     help="trt compiles a TensorRT engine on first use (cached in engines/)")
@@ -181,7 +190,7 @@ def main():
     enc = subprocess.Popen([ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                             "-f", "rawvideo", "-pix_fmt", "rgb48le", "-video_size", f"{W}x{H}",
                             "-framerate", f"{fps}", "-i", "-",
-                            "-c:v", "libx264", "-preset", "fast", "-crf", "6",
+                            "-c:v", "libx264", "-preset", "fast", "-qp", "4",
                             "-pix_fmt", "yuv444p10le",
                             "-movflags", "use_metadata_tags", "-metadata", f"smru_flow_range={rng:g}",
                             out],

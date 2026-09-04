@@ -39,6 +39,7 @@
 #include <cmath>
 #include <chrono>
 #include <memory>
+#include <memory>
 
 #include "VideoDecoder.h"
 #include "D3D12Renderer.h"
@@ -76,20 +77,23 @@ struct Options {
                                       // history trails the motion (measured slightly
                                       // worse), so it is opt-in. 0 = off (default).
     // Guide ablation / quality switches.
-    // Motion vectors fed to DLSS: 0 zero (default - perceptually cleanest on real
-    // footage; per-block flow errors read as swimming/flicker in the history),
-    // 1 global (one robust median pan vector per frame), 2 estimated (full field).
-    int mvMode = 0;
+    // Motion vectors fed to DLSS: 0 zero, 1 global (one robust median pan
+    // vector per frame), 2 estimated (full field; default). Measured with the
+    // corrected MVec sign (2026-09-04): the estimated field, RAFT sidecar or
+    // block matcher, keeps the output more stable along the motion than zero
+    // vectors on synthetic and real footage alike.
+    int mvMode = 2;
     uint32_t nrPreset = 0;            // --nr-preset N: DLSSNR.Hint.Render.Preset at
                                       // feature creation (other DLSS5 hosts default
                                       // to 3; this project's historical value is 0)
     uint32_t nrMaskMode = 0;          // --nr-mask-mode bias|white|inv: what the
                                       // ControlMask carries when bound (measured
                                       // semantics: "process where set")
-    float nrMVScale = -1.0f;          // --nr-mvscale S: DLSSNR.MVecScaleX/Y. The
-                                      // runtime reads MVec with the OPPOSITE sign
-                                      // of our current->previous field (measured),
-                                      // so -1 is the correct default.
+    float nrMVScale = 1.0f;           // --nr-mvscale S: DLSSNR.MVecScaleX/Y. The
+                                      // runtime reads MVec as current->previous in
+                                      // input pixels, our field's own convention:
+                                      // +1 (measured against exact vectors; the
+                                      // old -1 warped the history the wrong way).
     uint32_t nrGuides = 1;            // --nr-guides bitmask words: off | on(=mv) |
                                       // mv | depth | mask | all, comma-separable.
                                       // Binding ControlMask suppresses the neural
@@ -131,6 +135,15 @@ struct Options {
     std::wstring depthVideo;          // --depth-video (file mode): grayscale depth movie
                                       // decoded alongside (bright = near, e.g. Depth Anything)
     std::wstring flowVideo;           // --flow-video (file mode): RAFT flow movie
+    // --mask-layer F[:S[:T]] (file mode, up to four): one segmentation layer
+    // per phrase (GenMask --layers) with its structure and tone weights 0..1,
+    // composited in order into the runtime's RGB ControlMask; --mask-bg S:T is
+    // what every pixel outside the layers gets. Layers replace --mask-video.
+    std::vector<std::wstring> maskLayers;
+    float maskLayerS[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float maskLayerT[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float maskBgS = 0.0f, maskBgT = 0.0f;
+    bool nrGuidesExplicit = false;    // --nr-guides given: a mask file no longer binds itself
     std::wstring maskVideo;           // --mask-video (file mode): segmentation mask movie
                                       // (white = process here) driving DLSSNR.ControlMask
                                       // (R=dx, G=dy in [-24..24] src px around 127.5)
@@ -187,10 +200,10 @@ L"  --quality Q        accepted, no effect: the neural pass runs 1:1 and has no 
 L"  --crf N            encode quality for file mode (default 16; NVENC uses it as -cq)\n"
 L"  --codec C          x264 (default) | hevc (NVENC hw) | av1 (NVENC hw)\n"
 L"  --flow MODE        fine (default; dense subpixel flow) | fast (realtime grid)\n"
-L"  --mv MODE          zero (default) | global (one pan vector/frame) | estimated\n"
+L"  --mv MODE          estimated (default) | global (one pan vector/frame) | zero\n"
 L"  --nr-guides M      off | on (= mv, default) | all | mv,depth,mask combos\n"
 L"  --nr-mask-mode M   bias (default) | white | inv: ControlMask content when bound\n"
-L"  --nr-mvscale S     MVec scale reported to the runtime (default -1, measured sign)\n"
+L"  --nr-mvscale S     MVec scale reported to the runtime (default +1, measured sign)\n"
 L"  --temporal MODE    on (default) | off (reset DLSS history every frame)\n"
 L"  --cut-reset MODE   on (default) | off: reset the DLSS history on detected\n"
 L"                     scene cuts (correspondence loss, robust to fast pans)\n"
@@ -233,11 +246,37 @@ L"                     static shots, can trail on motion)\n"
 L"  --flow-video F     file mode: RAFT flow movie (tools\\make_flow_video.py);\n"
 L"                     replaces the block-matcher motion vectors entirely\n"
 L"  --mask-video F     file mode: segmentation mask movie (tools\\make_mask_video.py):\n"
-L"                     white = process here. Feeds DLSSNR.ControlMask; pair it\n"
-L"                     with --nr-guides mask (or all) to bind it\n"
+L"                     white = process here (one layer at full weight). Binds the\n"
+L"                     ControlMask unless --nr-guides says otherwise\n"
+L"  --mask-layer F:S:T one segmentation layer (GenMask --layers writes one per\n"
+L"                     phrase) with its structure and tone weights 0..1; up to\n"
+L"                     four, painted in order; replaces --mask-video\n"
+L"  --mask-bg S:T      structure and tone weights outside every layer (default 0:0)\n"
 L"\n"
 L"4K / upscaling: pass --output-size (e.g. 3840x2194). The frame is resized to\n"
 L"that size and the neural pass redraws every output pixel 1:1.\n");
+}
+
+// "--mask-layer F[:S[:T]]": the weights are peeled off the END of the spec, so
+// a drive letter's colon is never mistaken for one. One trailing number is the
+// structure weight; two are structure then tone.
+static void SplitLayerSpec(std::wstring& spec, float& s, float& t) {
+    auto peel = [&](float& out) -> bool {
+        const size_t p = spec.find_last_of(L':');
+        if (p == std::wstring::npos || p + 1 >= spec.size()) return false;
+        const std::wstring tail = spec.substr(p + 1);
+        wchar_t* end = nullptr;
+        const double v = wcstod(tail.c_str(), &end);
+        if (!end || *end != L'\0') return false;
+        out = float(std::clamp(v, 0.0, 1.0));
+        spec.erase(p);
+        return true;
+    };
+    float last = 0.0f;
+    if (!peel(last)) return;
+    float first = 0.0f;
+    if (peel(first)) { s = first; t = last; }
+    else s = last;
 }
 
 Options ParseArgs() {
@@ -301,6 +340,20 @@ Options ParseArgs() {
         else if (a == L"--depth-video") { o.depthVideo = next(); o.depthIn = true; }
         else if (a == L"--flow-video") o.flowVideo = next();
         else if (a == L"--mask-video") o.maskVideo = next();
+        else if (a == L"--mask-layer") {
+            std::wstring spec = next();
+            float s = 1.0f, t = 1.0f;
+            SplitLayerSpec(spec, s, t);
+            if (o.maskLayers.size() >= 4) fail(L"--mask-layer: at most four layers");
+            else { o.maskLayerS[o.maskLayers.size()] = s; o.maskLayerT[o.maskLayers.size()] = t; o.maskLayers.push_back(spec); }
+        }
+        else if (a == L"--mask-bg") {
+            std::wstring spec = L"bg:" + next();
+            float s = 0.0f, t = 0.0f;
+            SplitLayerSpec(spec, s, t);
+            if (spec != L"bg") badValue(L"S:T");
+            else { o.maskBgS = s; o.maskBgT = t; }
+        }
         else if (a == L"--size") { if (!parseSize(next(), o.inW, o.inH)) badValue(L"expected WxH"); }
         else if (a == L"--output-size") { if (!parseSize(next(), o.outW, o.outH)) badValue(L"expected WxH"); }
         else if (a == L"--fps") { const double f = _wtof(next().c_str()); if (f >= 1.0 && f <= 480.0) o.fps = f; else badValue(L"1..480"); }
@@ -397,7 +450,7 @@ Options ParseArgs() {
                     if (comma == std::wstring::npos) break;
                     pos = comma + 1;
                 }
-                if (ok) o.nrGuides = m; else badValue(L"off|on|all|mv,depth,mask");
+                if (ok) { o.nrGuides = m; o.nrGuidesExplicit = true; } else badValue(L"off|on|all|mv,depth,mask");
             }
         }
         else if (a == L"--quality") {
@@ -604,7 +657,7 @@ struct Pipeline {
         if (o.bits == 16) renderer.EnableDeepInput();
         if (o.depthIn) renderer.EnableExternalDepth();
         if (!o.flowVideo.empty()) renderer.EnableExternalFlow();
-        if (!o.maskVideo.empty()) renderer.EnableExternalMask();
+        if (!o.maskVideo.empty() || !o.maskLayers.empty()) renderer.EnableExternalMask();
         const uint32_t outW = o.outW ? o.outW : srcW;
         const uint32_t outH = o.outH ? o.outH : srcH;
         hwnd = CreateHiddenWindow();
@@ -650,7 +703,20 @@ struct Pipeline {
         }
         renderer.SetDLSS(!o.dlssOff);
         renderer.SetJitterMode(o.jitter);
+        // A mask file is asked for to be USED: it binds the ControlMask unless
+        // --nr-guides was spelled out. Layers carry their own weights; the
+        // plain --mask-video is one layer at full weight over an untouched
+        // background ("white = process here").
+        if (!o.nrGuidesExplicit && (!o.maskVideo.empty() || !o.maskLayers.empty())) o.nrGuides |= 4u;
         renderer.SetNRGuideMask(o.nrGuides);
+        {
+            D3D12Renderer::MaskLayer layers[D3D12Renderer::kMaxMaskLayers];
+            const uint32_t n = o.maskLayers.empty() ? 1u
+                : uint32_t(std::min<size_t>(o.maskLayers.size(), D3D12Renderer::kMaxMaskLayers));
+            if (!o.maskLayers.empty())
+                for (uint32_t k = 0; k < n; ++k) { layers[k].structure = o.maskLayerS[k]; layers[k].tone = o.maskLayerT[k]; }
+            renderer.SetMaskLayers(layers, n, o.maskBgS, o.maskBgT);
+        }
         renderer.SetNRMaskMode(o.nrMaskMode);
         renderer.SetNRMVScale(o.nrMVScale);
         // --mv zero must zero the FINAL MV field even when --flow-video is
@@ -826,6 +892,25 @@ int RunFile(Options o) {
             o.maskVideo.clear();
         }
     }
+    // Per-object layers (--mask-layer): up to four grey movies, packed one per
+    // channel and composited on the GPU with their weights. They replace the
+    // union mask when both are given. A layer that cannot be read stays
+    // transparent (its weights never apply) rather than failing the export.
+    std::vector<std::unique_ptr<VideoDecoder>> layerDec;
+    if (!o.maskLayers.empty()) {
+        for (size_t k = 0; k < o.maskLayers.size() && k < 4; ++k) {
+            auto d = std::make_unique<VideoDecoder>();
+            bool ok = d->Open(o.maskLayers[k]);
+            if (ok && (d->Width() != W || d->Height() != H)) d->SetDecodeSize(W, H);
+            ok = ok && d->Width() == W && d->Height() == H;
+            if (!ok) fprintf(stderr, SMRU_LOG_TAG " mask layer unusable (must match %ux%u): %ls\n", W, H, o.maskLayers[k].c_str());
+            else fprintf(stderr, SMRU_LOG_TAG " mask layer %zu attached: %ls (structure %.2f, tone %.2f)\n",
+                         k, o.maskLayers[k].c_str(), o.maskLayerS[k], o.maskLayerT[k]);
+            layerDec.push_back(ok ? std::move(d) : nullptr);
+        }
+        fprintf(stderr, SMRU_LOG_TAG " mask background: structure %.2f, tone %.2f\n", o.maskBgS, o.maskBgT);
+        if (haveMaskVideo) { fprintf(stderr, SMRU_LOG_TAG " --mask-video ignored: --mask-layer given\n"); haveMaskVideo = false; }
+    }
 
     // --scaler lanczos: crisp CPU upscale first, then a DLAA detail pass at full
     // output resolution instead of DLSS SR doing the scaling. Sidecars are
@@ -836,9 +921,9 @@ int RunFile(Options o) {
     if (lanczos) {
         procW = o.outW; procH = o.outH;
         o.outW = o.outH = 0;
-        if (haveDepthVideo || haveFlowVideo || haveMaskVideo) {
+        if (haveDepthVideo || haveFlowVideo || haveMaskVideo || !layerDec.empty()) {
             fprintf(stderr, SMRU_LOG_TAG " scaler=lanczos: depth/flow/mask sidecars are source-calibrated; ignoring them\n");
-            haveDepthVideo = false; haveFlowVideo = false; haveMaskVideo = false; o.depthIn = false;
+            haveDepthVideo = false; haveFlowVideo = false; haveMaskVideo = false; o.depthIn = false; layerDec.clear();
         }
         lz.resize(size_t(procW) * procH * 4);
         fprintf(stderr, SMRU_LOG_TAG " scaler=lanczos: %ux%u -> %ux%u CPU Lanczos3 + DLAA detail pass\n",
@@ -913,8 +998,11 @@ int RunFile(Options o) {
     // the stream - so the decoder's own frame is not a safe "last good plane".
     // Each sidecar keeps its complete frames here instead (swapped in, never
     // copied) and stops being read once it runs dry.
-    std::vector<uint8_t> flowPlane, maskPlane;
+    std::vector<uint8_t> flowPlane, maskPlane, maskPacked;
     bool flowEnded = false, maskEnded = false, depthEnded = false;
+    VideoFrame layerFrame[4];
+    std::vector<uint8_t> layerPlane[4];
+    bool layerEnded[4]{};
     if (o.compare || o.split) stitched.assign(size_t(encW) * outH * 4, 0);
     while (decoder.ReadNext(f)) {
         const uint8_t* dptr = nullptr;
@@ -950,7 +1038,26 @@ int RunFile(Options o) {
                             " mask plane for the rest of the export\n", (unsigned long long)n);
                 }
             }
-            if (!maskPlane.empty()) { mptr = maskPlane.data(); mbytes = maskPlane.size(); }
+            if (!maskPlane.empty()) {
+                const uint8_t* one[1] = { maskPlane.data() };
+                PackMaskLayers(one, 1, W, H, maskPacked);
+                mptr = maskPacked.data(); mbytes = maskPacked.size();
+            }
+        }
+        if (!layerDec.empty()) {
+            // A layer that runs dry holds its last frame, like the union mask.
+            const uint8_t* planes[4]{};
+            for (size_t k = 0; k < layerDec.size() && k < 4; ++k) {
+                if (!layerDec[k]) continue;
+                if (!layerEnded[k]) {
+                    if (layerDec[k]->ReadNext(layerFrame[k]) && layerFrame[k].bgra.size() >= size_t(W) * H * 4)
+                        layerPlane[k].swap(layerFrame[k].bgra);
+                    else layerEnded[k] = true;
+                }
+                if (!layerPlane[k].empty()) planes[k] = layerPlane[k].data();
+            }
+            PackMaskLayers(planes, uint32_t(layerDec.size()), W, H, maskPacked);
+            mptr = maskPacked.data(); mbytes = maskPacked.size();
         }
         if (haveDepthVideo) {
             if (!depthEnded) {

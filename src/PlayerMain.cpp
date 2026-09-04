@@ -476,7 +476,7 @@ private:
         m_srUpscale=ReadSetting(L"SrUpscale",0.0f)>0.5f;
         m_lutStrength=std::clamp(ReadSetting(L"LutStrength",1.0f),0.0f,1.0f);
         m_svrStrength=std::clamp(ReadSetting(L"SvrStrength",0.7f),0.0f,1.0f);
-        m_motionMode=std::clamp(int(ReadSetting(L"Motion",0.0f)),0,2);
+        m_motionMode=std::clamp(int(ReadSetting(L"Motion",2.0f)),0,2);
         m_fxLut=ReadSetting(L"FxLut",1.0f)>0.5f;
         m_fxSharpen=ReadSetting(L"FxSharpen",1.0f)>0.5f;
         m_fxTone=ReadSetting(L"FxTone",1.0f)>0.5f;
@@ -486,13 +486,24 @@ private:
         // (measured), so it is an explicit A/B decision, never a surprise.
         m_fxMask=ReadSetting(L"FxMask",0.0f)>0.5f;
         m_maskPrompt=ReadSettingString(L"MaskPrompt");
+        m_maskBgS=std::clamp(ReadSetting(L"MaskBgStruct",0.0f),0.0f,1.0f);
+        m_maskBgT=std::clamp(ReadSetting(L"MaskBgTone",0.0f),0.0f,1.0f);
+        for(int k=0;k<kMaxLayers;++k){
+            wchar_t key[32]{};
+            swprintf_s(key,L"MaskL%dStruct",k);m_layerS[k]=std::clamp(ReadSetting(key,1.0f),0.0f,1.0f);
+            swprintf_s(key,L"MaskL%dTone",k);m_layerT[k]=std::clamp(ReadSetting(key,1.0f),0.0f,1.0f);
+            swprintf_s(key,L"MaskL%dOn",k);m_layerOn[k]=ReadSetting(key,1.0f)>0.5f;
+        }
         m_panelLeft=ReadSetting(L"PanelLeft",0.0f)>0.5f;
         m_maskSensitivity=std::clamp(int(ReadSetting(L"MaskSensitivity",1.0f)),0,2);
         m_nrSmooth=std::clamp(ReadSetting(L"NrSmooth",0.0f),0.0f,1.0f);
         m_exportRes=std::clamp(int(ReadSetting(L"ExportRes",0.0f)),0,3);
         m_exportCodec=std::clamp(int(ReadSetting(L"ExportCodec",0.0f)),0,2);
-        {const int open=int(ReadSetting(L"PanelOpen",49.0f));
-         for(int g=0;g<7;++g)m_groupOpen[g]=(open>>g)&1;}
+        {int open=int(ReadSetting(L"PanelOpen",177.0f));
+         // An ini from before the Masks group existed has no bit for it: open
+         // it once so the new controls are seen; the state persists after that.
+         if(ReadSettingString(L"MaskBgStruct").empty())open|=1<<7;
+         for(int g=0;g<kGroupCount;++g)m_groupOpen[g]=(open>>g)&1;}
         m_nrModelPick=int(ReadSetting(L"NrModel",-1.0f));if(m_nrModelPick<-1||m_nrModelPick>2)m_nrModelPick=-1;
         m_nrIntensity=std::min(1.0f,std::max(0.0f,ReadSetting(L"NrIntensity",1.0f)));
         m_nrLocalStructure=std::min(2.0f,std::max(0.0f,ReadSetting(L"NrLocalStructure",1.0f)));
@@ -526,10 +537,18 @@ private:
         WriteSetting(L"PanelLeft",m_panelLeft?1.0f:0.0f);
         WriteSetting(L"MaskSensitivity",float(m_maskSensitivity));
         WritePrivateProfileStringW(smru::kSettingsSection,L"MaskPrompt",m_maskPrompt.c_str(),SettingsPath().c_str());
+        WriteSetting(L"MaskBgStruct",m_maskBgS);
+        WriteSetting(L"MaskBgTone",m_maskBgT);
+        for(int k=0;k<kMaxLayers;++k){
+            wchar_t key[32]{};
+            swprintf_s(key,L"MaskL%dStruct",k);WriteSetting(key,m_layerS[k]);
+            swprintf_s(key,L"MaskL%dTone",k);WriteSetting(key,m_layerT[k]);
+            swprintf_s(key,L"MaskL%dOn",k);WriteSetting(key,m_layerOn[k]?1.0f:0.0f);
+        }
         WriteSetting(L"NrSmooth",m_nrSmooth);
         WriteSetting(L"ExportRes",float(m_exportRes));
         WriteSetting(L"ExportCodec",float(m_exportCodec));
-        {int open=0;for(int g=0;g<7;++g)if(m_groupOpen[g])open|=1<<g;
+        {int open=0;for(int g=0;g<kGroupCount;++g)if(m_groupOpen[g])open|=1<<g;
          WriteSetting(L"PanelOpen",float(open));}
         WriteSetting(L"NrModel",float(m_nrModelPick));
         WriteSetting(L"NrIntensity",m_nrIntensity);
@@ -573,6 +592,12 @@ private:
             // output more than the mask content does (measured), so the A/B
             // is between "mask bound" and "MVec only", never a surprise.
             m_renderer->SetNRGuideMask(1u|((FxMaskOn()&&m_maskLoaded)?4u:0u));
+            // The layers' weights (and the background's) reach the guide
+            // expansion live; the overlay is a preview aid and needs no bind.
+            {D3D12Renderer::MaskLayer layers[kMaxLayers];
+             for(int k=0;k<kMaxLayers;++k){layers[k].structure=m_layerS[k];layers[k].tone=m_layerT[k];layers[k].enabled=m_layerOn[k];}
+             m_renderer->SetMaskLayers(layers,uint32_t(std::max(1,m_layerCount)),m_maskBgS,m_maskBgT);
+             m_renderer->SetMaskOverlay(m_maskOverlay&&m_maskLoaded);}
             // Zero motion mode zeroes the FINAL MV field on the GPU too, so an
             // attached _flow.mp4 cannot bypass "zero vectors" into the NR MVec.
             m_renderer->SetMVFieldScale(m_motionMode==0?0.0f:1.0f);
@@ -670,9 +695,9 @@ private:
         AppendMenuW(fx,MF_STRING,IDM_LUT_LOAD,L"Load LUT (.cube)...");
         AppendMenuW(fx,MF_STRING|(m_lutPath.empty()?MF_GRAYED:MF_UNCHECKED),IDM_LUT_CLEAR,L"Clear LUT");
         HMENU motion=CreatePopupMenu();
-        AppendMenuW(motion,MF_STRING|(m_motionMode==0?MF_CHECKED:0),IDM_MOTION_ZERO,L"Zero (cleanest)");
+        AppendMenuW(motion,MF_STRING|(m_motionMode==0?MF_CHECKED:0),IDM_MOTION_ZERO,L"Zero");
         AppendMenuW(motion,MF_STRING|(m_motionMode==1?MF_CHECKED:0),IDM_MOTION_GLOBAL,L"Global pan");
-        AppendMenuW(motion,MF_STRING|(m_motionMode==2?MF_CHECKED:0),IDM_MOTION_EST,L"Estimated (full flow)");
+        AppendMenuW(motion,MF_STRING|(m_motionMode==2?MF_CHECKED:0),IDM_MOTION_EST,L"Estimated (full flow, default)");
         AppendMenuW(fx,MF_POPUP,reinterpret_cast<UINT_PTR>(motion),L"Motion Vectors (fallback)");
         HMENU nrmodel=CreatePopupMenu();
         // Direct engine: style is a live per-evaluate parameter (0 = A when unset).
@@ -733,18 +758,10 @@ private:
                 m_depthLoaded=true;LOG("Depth map video attached to live playback.");
             } else {m_depthVideoDecoder.Close();LOG("Depth video size mismatch; live attach skipped.");}
          }}
-        // Segmentation-mask live attach: <stem>_mask.mp4 (white = process here)
-        // replaces the block-matcher uncertainty as the ControlMask source. It
-        // only reaches the runtime when the mask guide bit is also bound.
-        m_maskLoaded=false;m_haveMaskFrame=false;m_maskDecoder.Close();
-        {const std::wstring mp=MaskVideoPathFor(path);
-         if(std::filesystem::exists(mp)&&m_maskDecoder.Open(mp)){
-            if(m_maskDecoder.Width()!=m_decoder.Width()||m_maskDecoder.Height()!=m_decoder.Height())
-                m_maskDecoder.SetDecodeSize(m_decoder.Width(),m_decoder.Height());
-            if(m_maskDecoder.Width()==m_decoder.Width()&&m_maskDecoder.Height()==m_decoder.Height()){
-                m_maskLoaded=true;LOG("Segmentation mask video attached to live playback.");
-            } else {m_maskDecoder.Close();LOG("Mask video size mismatch; live attach skipped.");}
-         }}
+        // Segmentation-mask live attach: the per-phrase layers GenMask wrote
+        // (<stem>_mask_<phrase>.mp4), or the union <stem>_mask.mp4 as the one
+        // layer. They only reach the runtime while MaskNR binds the ControlMask.
+        AttachMaskLayers(path);
         ShowWindow(m_viewport,SW_SHOW); Layout();
         m_renderer=std::make_unique<D3D12Renderer>();
         m_renderer->SetNRSettings(CurrentNRSettings());
@@ -793,7 +810,7 @@ private:
     void Unload() {
         m_zoom=1.0f;m_zoomCX=0.5f;m_zoomCY=0.5f;m_zoomRectDrag=false;m_zoomPan=false;
         m_compareOn=false;m_compareDrag=false;m_compareOrient=1;m_comparePos=0.5f;
-        m_seekPending=false;m_seeking=false;m_audio.Stop(); if(m_renderer){m_renderer->WaitGPU();m_pipeline.reset();m_renderer.reset();} m_decoder.Close();m_flowDecoder.Close();m_flowLoaded=false;m_haveFlowFrame=false;m_depthVideoDecoder.Close();m_depthLoaded=false;m_haveDepthFrame=false;m_maskDecoder.Close();m_maskLoaded=false;m_haveMaskFrame=false;m_haveNext=false;m_next=VideoFrame{};m_loaded=false;m_playing=false;m_currentSec=0;m_path.clear();
+        m_seekPending=false;m_seeking=false;m_audio.Stop(); if(m_renderer){m_renderer->WaitGPU();m_pipeline.reset();m_renderer.reset();} m_decoder.Close();m_flowDecoder.Close();m_flowLoaded=false;m_haveFlowFrame=false;m_depthVideoDecoder.Close();m_depthLoaded=false;m_haveDepthFrame=false;CloseMaskLayers();m_haveNext=false;m_next=VideoFrame{};m_loaded=false;m_playing=false;m_currentSec=0;m_path.clear();
         if(m_viewport)ShowWindow(m_viewport,SW_HIDE); UpdateTitle(); if(m_hwnd)InvalidateRect(m_hwnd,nullptr,TRUE);
     }
 
@@ -816,8 +833,12 @@ private:
         if(m_flowLoaded&&advance(m_flowDecoder,m_flowFrame,m_haveFlowFrame)){
             sc.flow=m_flowFrame.bgra.data();sc.flowBytes=m_flowFrame.bgra.size();
         }
-        if(m_maskLoaded&&advance(m_maskDecoder,m_maskFrame,m_haveMaskFrame)){
-            sc.mask=m_maskFrame.bgra.data();sc.maskBytes=m_maskFrame.bgra.size();
+        if(m_maskLoaded){
+            const uint8_t* planes[kMaxLayers]{};
+            for(int k=0;k<m_layerCount;++k)
+                if(advance(m_layerDec[k],m_layerFrame[k],m_haveLayerFrame[k]))planes[k]=m_layerFrame[k].bgra.data();
+            PackMaskLayers(planes,uint32_t(m_layerCount),m_decoder.Width(),m_decoder.Height(),m_maskPacked);
+            sc.mask=m_maskPacked.data();sc.maskBytes=m_maskPacked.size();
         }
         if(m_depthLoaded&&advance(m_depthVideoDecoder,m_depthVideoFrame,m_haveDepthFrame)){
             DepthGrayToR16(m_depthVideoFrame.bgra.data(),m_decoder.Width(),m_decoder.Height(),m_depthPlane);
@@ -924,7 +945,7 @@ private:
         };
         if(m_flowLoaded){m_flowDecoder.SeekSeconds(sec);m_haveFlowFrame=false;}
         if(m_depthLoaded){m_depthVideoDecoder.SeekSeconds(sec);m_haveDepthFrame=false;}
-        if(m_maskLoaded){m_maskDecoder.SeekSeconds(sec);m_haveMaskFrame=false;}
+        for(int k=0;k<m_layerCount;++k){m_layerDec[k].SeekSeconds(sec);m_haveLayerFrame[k]=false;}
         VideoFrame f; bool got=readAt(sec,f);
         if(!got){
             LOG("Seek decoder restart failed; reopening the same file for recovery.");
@@ -985,20 +1006,21 @@ private:
     // 34 SeedVR job, 35/36/37 inspection zoom out / in / reset-to-fit,
     // 38 A/B vertical split, 39 A/B horizontal split,
     // 43 GenMask (text-prompted segmentation job), 44 MaskNR (bind the mask
-    // into the neural pass, A/B), 45 Reset (every look control to defaults).
-    static constexpr int kBtnCount=48;   // 46 = NR Auto Mask (was the Image adjustments window button), 47 = DLSS SR
+    // into the neural pass, A/B), 45 Reset (every look control to defaults),
+    // 48 Show masks (preview overlay), 49..52 = mask layer on/off pills.
+    static constexpr int kBtnCount=53;   // 46 = NR Auto Mask (was the Image adjustments window button), 47 = DLSS SR
     // (kept for reference)   // 40 = export resolution cycle, 41 = export codec cycle, 42 = save processed frame
     static constexpr int kBarOrder[8]={0, 1,2,3,4,16, 5, 11};
     static constexpr int kBarGroup[8]={0, 1,1,1,1,1,  2, 3};
     static constexpr int kPanelG0[]={6,47,7,10,23,26,28,29,30,46};
     static constexpr int kPanelG1[]={12,13,14,15,40,41,25,42,17,9,43,34};
     static constexpr int kPanelG2[]={31,32,33};
-    static constexpr int kPanelG3[]={18,19,20,22,24,21,44,27,45};
+    static constexpr int kPanelG3[]={18,19,20,22,24,21,27,45};
     static constexpr int kPanelG4[]={38,39,35,36,37};
     struct PanelGroup{const wchar_t* caption;const int* items;int count;};
     static constexpr PanelGroup kPanelGroups[5]={
         {L"Picture",kPanelG0,10},{L"Export & Jobs",kPanelG1,12},
-        {L"Motion",kPanelG2,3},{L"Effects",kPanelG3,9},
+        {L"Motion",kPanelG2,3},{L"Effects",kPanelG3,8},
         {L"Inspect",kPanelG4,5}};
     struct BarFrame{RECT r;const wchar_t* caption;int group;COLORREF tint;};
     RECT m_btnRect[kBtnCount]{};
@@ -1008,19 +1030,24 @@ private:
     // Tracks are normalized 0..1; kSliderMin/Max map them to the real ranges
     // (Structure 0..2, Brightness -2..+2 EV, ...). Skin's leftmost third is
     // the -1 sentinel: follow Structure.
-    static constexpr int kSliderCount=15;
-    static constexpr int kColorSliderFirst=9;   // sliders 9.. form the Color group
+    // Sliders 15.. belong to the Masks group: background structure and tone,
+    // then (structure, tone) per layer.
+    static constexpr int kSliderCount=25;
+    static constexpr int kColorSliderFirst=9;   // sliders 9..14 form the Color group
+    static constexpr int kMaskSliderFirst=15;
     static constexpr const wchar_t* kSliderLabel[kSliderCount]={L"NR",L"Struct",L"Sharp",L"Post",L"Tone",L"Smooth",L"LUT",L"SVR",L"Skin",
-                                                                L"Bright",L"Contr",L"Sat",L"Gamma",L"Temp",L"Tint"};
-    static constexpr float kSliderMin[kSliderCount]={0,0,0,0,0,0,0,0,-1, -2,0,0,0.25f,-1,-1};
-    static constexpr float kSliderMax[kSliderCount]={1,2,1,1,1,1,1,1, 2,  2,3,3,3,    1, 1};
+                                                                L"Bright",L"Contr",L"Sat",L"Gamma",L"Temp",L"Tint",
+                                                                L"Bg Str",L"Bg Tone",L"Struct",L"Tone",L"Struct",L"Tone",L"Struct",L"Tone",L"Struct",L"Tone"};
+    static constexpr float kSliderMin[kSliderCount]={0,0,0,0,0,0,0,0,-1, -2,0,0,0.25f,-1,-1, 0,0,0,0,0,0,0,0,0,0};
+    static constexpr float kSliderMax[kSliderCount]={1,2,1,1,1,1,1,1, 2,  2,3,3,3,    1, 1, 1,1,1,1,1,1,1,1,1,1};
     RECT m_sliderRect[kSliderCount]{};RECT m_sliderTrack[kSliderCount]{};
     int m_dragSlider=-1;
     HWND m_tip=nullptr;int m_tipId=-1;
     int m_pressBtn=-1;   // armed on press, fires on release while still over
-    // Default: Picture, Inspect and Levels expanded; Export & Jobs, Motion,
-    // Effects and Color start collapsed (bitmask 49, persisted as PanelOpen).
-    bool m_groupOpen[7]={true,false,false,false,true,true,false};
+    // Default: Picture, Inspect, Levels and Masks expanded; Export & Jobs,
+    // Motion, Effects and Color start collapsed (bitmask 177, persisted as PanelOpen).
+    static constexpr int kGroupCount=8;   // 5 button groups, Levels, Color, Masks
+    bool m_groupOpen[kGroupCount]={true,false,false,false,true,true,false,true};
     int m_exportRes=0;   // 0 = preview size, 1 = 3840 long side, 2 = 7680 long side, 3 = native (source size, 1:1 neural pass)
     int m_exportCodec=0; // 0 = x264, 1 = HEVC NVENC, 2 = AV1 NVENC
     int m_panelScroll=0,m_panelContentH=0;
@@ -1034,7 +1061,9 @@ private:
         case 9:return m_colorSettings.brightness;case 10:return m_colorSettings.contrast;
         case 11:return m_colorSettings.saturation;case 12:return m_colorSettings.gamma;
         case 13:return m_colorSettings.temperature;case 14:return m_colorSettings.tint;
+        case 15:return m_maskBgS;case 16:return m_maskBgT;
         }
+        if(s>=17&&s<kSliderCount){const int k=(s-17)/2;return (s-17)%2==0?m_layerS[k]:m_layerT[k];}
         return 0.0f;
     }
     float GetSliderVal(int s)const{
@@ -1070,6 +1099,12 @@ private:
         case 12:m_colorSettings.gamma=v;break;
         case 13:m_colorSettings.temperature=v;break;
         case 14:m_colorSettings.tint=v;break;
+        // Mask weights: touching one means "use the masks" - arm MaskNR.
+        case 15:m_maskBgS=v;m_fxMask=true;break;
+        case 16:m_maskBgT=v;m_fxMask=true;break;
+        default:
+            if(s>=17&&s<kSliderCount){const int k=(s-17)/2;if((s-17)%2==0)m_layerS[k]=v;else m_layerT[k]=v;m_fxMask=true;}
+            break;
         }
         ApplyVideoAdjustments(true);InvalidateControls();
     }
@@ -1089,7 +1124,7 @@ private:
         switch(i){
         case 6:case 7:case 10:case 23:case 26:case 28:case 29:case 30:case 46:case 47:return 1;
         case 9:case 12:case 13:case 14:case 15:case 17:case 25:case 34:case 40:case 41:case 42:case 43:return 2;
-        case 18:case 19:case 20:case 21:case 22:case 24:case 27:case 44:case 45:return 3;
+        case 18:case 19:case 20:case 21:case 22:case 24:case 27:case 44:case 45:case 48:case 49:case 50:case 51:case 52:return 3;
         case 31:case 32:case 33:return 4;
         case 35:case 36:case 37:case 38:case 39:return 5;
         }
@@ -1123,6 +1158,11 @@ private:
         case 17:return m_flowProc?L"Flow...":L"GenFlow";
         case 43:return m_maskProc?L"Mask...":L"GenMask";
         case 44:return L"MaskNR";
+        case 48:return L"Show";
+        case 49:case 50:case 51:case 52:{
+            std::wstring n=m_layerName[i-49];
+            if(n.size()>16)n=n.substr(0,15)+L"\u2026";
+            return n;}
         case 45:return L"Reset";
         case 18:return L"Bypass";
         case 19:return L"LUT";
@@ -1186,6 +1226,8 @@ private:
         case 20:return m_fxSharpen&&!m_bypassFX;
         case 21:return m_fxDepth&&!m_bypassFX;
         case 44:return m_fxMask&&!m_bypassFX;
+        case 48:return m_maskOverlay;
+        case 49:case 50:case 51:case 52:return m_layerOn[i-49];
         case 22:return m_fxTone&&!m_bypassFX;
         case 24:return m_fxFlow&&!m_bypassFX;
         case 28:return m_nrModelPick<=0; // unset (-1) resolves to style 0 = A
@@ -1250,7 +1292,7 @@ private:
             const int gut=6;
             const int colW=(px1-px0-12-gut)/2;
             int y=8-m_panelScroll;
-            static constexpr COLORREF kGroupTint[7]={Pal::BlueInk,Pal::VioletInk,Pal::TealInk,Pal::GreenInk,Pal::SandInk,Pal::Ink2,Pal::BlueInk};
+            static constexpr COLORREF kGroupTint[kGroupCount]={Pal::BlueInk,Pal::VioletInk,Pal::TealInk,Pal::GreenInk,Pal::SandInk,Pal::Ink2,Pal::BlueInk,Pal::GreenInk};
             for(int gi=0;gi<5;++gi){
                 const PanelGroup&g=kPanelGroups[gi];
                 const int frameTop=y;
@@ -1288,6 +1330,30 @@ private:
                     for(int s=first;s<last;++s){m_sliderRect[s]=RECT{0,0,0,0};m_sliderTrack[s]=RECT{0,0,0,0};}
                 }
                 m_barFrames.push_back({RECT{px0-6,frameTop,px1+6,y},sg?L"Color":L"Levels",group,kGroupTint[group]});
+            }
+            // Masks: the bind and overlay toggles, then the background weights
+            // and, per attached layer, its on/off pill and two sliders.
+            {
+                y+=12;const int group=7;const int frameTop=y;y+=22;
+                m_btnRect[44]=RECT{0,0,0,0};
+                for(int i=48;i<kBtnCount;++i)m_btnRect[i]=RECT{0,0,0,0};
+                for(int s=kMaskSliderFirst;s<kSliderCount;++s){m_sliderRect[s]=RECT{0,0,0,0};m_sliderTrack[s]=RECT{0,0,0,0};}
+                if(m_groupOpen[group]){
+                    m_btnRect[44]=RECT{px0+6,y,px0+6+colW,y+22};
+                    m_btnRect[48]=RECT{px0+6+colW+gut,y,px0+6+colW+gut+colW,y+22};
+                    y+=28;
+                    if(m_layerCount>0){
+                        auto slider=[&](int s){m_sliderRect[s]=RECT{px0+6,y,px1-6,y+20};m_sliderTrack[s]=RECT{px0+64,y+7,px1-14,y+13};y+=22;};
+                        slider(15);slider(16);
+                        for(int k=0;k<m_layerCount;++k){
+                            y+=4;
+                            m_btnRect[49+k]=RECT{px0+6,y,px1-6,y+22};y+=26;
+                            slider(17+2*k);slider(18+2*k);
+                        }
+                    }
+                    y+=6;
+                }
+                m_barFrames.push_back({RECT{px0-6,frameTop,px1+6,y},L"Masks",group,kGroupTint[group]});
             }
             m_panelContentH=y+m_panelScroll+8;
             // A resize or a side switch must never leave the panel scrolled
@@ -1345,9 +1411,15 @@ private:
         case 15:return L"Export one movie, left half original, right half processed";
         case 16:return L"Loop playback";
         case 17:return L"Generate RAFT optical flow (<name>_flow.mp4) beside the movie. Used when Motion is set to Estimated.";
-        case 45:return L"Reset every look control to its default: colour adjustments, all levels, the neural knobs, effect toggles on, Bypass off, Motion Zero. Keeps the loaded LUT, the model pick and the layout.";
+        case 45:return L"Reset every look control to its default: colour adjustments, all levels, the neural knobs, effect toggles on, Bypass off, Motion Estimated. Keeps the loaded LUT, the model pick and the layout.";
         case 43:return L"Generate a text-prompted segmentation mask (SAM 3, or Grounding DINO + SAM 2.1 when SAM 3 is not available): <name>_mask.mp4 beside the movie plus one _mask_<phrase>.mp4 per phrase. White = process here. Press Mask to view it, MaskNR to bind it.";
-        case 44:return m_maskLoaded?L"Bind the segmentation mask (<name>_mask.mp4) into the neural pass as ControlMask (A/B toggle). Compare against this OFF, never against a blank mask: binding alone changes the output.":L"Bind the segmentation mask into the neural pass - needs <name>_mask.mp4 beside the movie (GenMask).";
+        case 44:return m_maskLoaded?L"Bind the mask layers into the neural pass as its ControlMask (A/B toggle). While bound, the runtime's own automask is replaced: each layer gets the structure and tone below, everything outside them the Bg weights.":L"Bind the mask layers into the neural pass - needs <name>_mask.mp4 or <name>_mask_<phrase>.mp4 beside the movie (GenMask).";
+        case 48:return L"Tint every enabled mask layer in its own colour over the preview (green, blue, yellow, magenta - the order below). Preview only, never exported.";
+        case 49:case 50:case 51:case 52:return L"This layer on or off. Off = transparent: the pixels fall back to the layers below it, or to the Bg weights.";
+        case 115:return L"Structure weight outside every layer (0 = leave the background's detail alone)";
+        case 116:return L"Tone weight outside every layer (0 = no relight on the background)";
+        case 117:case 119:case 121:case 123:return L"Structure weight inside this layer: how much neural detail the object gets (the global Struct level still multiplies)";
+        case 118:case 120:case 122:case 124:return L"Tone weight inside this layer: how much of the neural relight the object gets";
         case 18:return L"Bypass ALL effect additions for a clean A/B (key: B)";
         case 19:return L"Apply the loaded .cube LUT (A/B toggle)";
         case 20:return L"Pre-sharpen: micro-contrast boost on the input BEFORE the neural pass (A/B toggle)";
@@ -1356,14 +1428,14 @@ private:
         case 23:return L"View the depth guide fed to the neural pass (bright = near)";
         case 24:return L"Use the RAFT flow video as the motion-vector field when Motion is Estimated (A/B toggle)";
         case 25:return L"Save a side-by-side comparison shot of the current frame";
-        case 26:return L"View the temporal uncertainty mask (bright = unreliable motion / disocclusion)";
+        case 26:return L"View the control mask fed to the neural pass: red = master weight, green = tone, blue = structure (white = full effect)";
         case 27:return m_lutPath.empty()?L"Load a .cube LUT file":L"Load a different .cube LUT. Right-click to remove the loaded LUT.";
         case 28:return L"Neural model A: strongest uplift";
         case 29:return L"Neural model B: subtle";
         case 30:return L"Neural model C: contrasty";
-        case 31:return L"Motion: zero vectors - the cleanest, most stable option for most footage";
+        case 31:return L"Motion: zero vectors - no history alignment at all; the fallback when the estimated field misbehaves";
         case 32:return L"Motion: one global pan vector per frame (robust median)";
-        case 33:return L"Motion: full estimated per-block field (RAFT flow when attached)";
+        case 33:return L"Motion: full estimated field (RAFT flow when attached, else the block matcher) - the default; measured most stable along motion";
         case 34:return L"Run SeedVR restoration (writes <name>_svr.mp4, then offers to load/export it). Strength comes from the SVR level below.";
         case 35:return L"Zoom out";
         case 36:return L"Zoom in (Ctrl+wheel also zooms at the cursor)";
@@ -1480,7 +1552,7 @@ private:
         {SetBkMode(dc,TRANSPARENT);auto of=SelectObject(dc,m_fontSmall);
          const int oldExtra=SetTextCharacterExtra(dc,1);
          for(const BarFrame&f:m_barFrames)if(f.caption){
-            const bool open=f.group>=0&&f.group<7&&m_groupOpen[f.group];
+            const bool open=f.group>=0&&f.group<kGroupCount&&m_groupOpen[f.group];
             const bool capHover=PtIn(RECT{f.r.left,f.r.top,f.r.right,f.r.top+24},m_mouseX,m_mouseY);
             SetTextColor(dc,capHover?Pal::Ink:Pal::Muted);
             std::wstring cap=f.caption;std::transform(cap.begin(),cap.end(),cap.begin(),::towupper);
@@ -1495,12 +1567,19 @@ private:
          SetTextCharacterExtra(dc,oldExtra);
          SelectObject(dc,of);}
         for(int i=0;i<kBtnCount;++i)if(!IsBarBtn(i)&&m_btnRect[i].right>m_btnRect[i].left)DrawButton(dc,m_btnRect[i],BtnLabel(i),BtnActive(i),BtnBusy(i),BtnIcon(i),BtnIconOnly(i),BtnRole(i),m_pressBtn==i);
+        // Layer pills carry the swatch of the colour the overlay paints them in.
+        for(int k=0;k<m_layerCount&&k<kMaxLayers;++k){
+            const RECT&r=m_btnRect[49+k];if(r.right<=r.left)continue;
+            RECT sw{r.left+8,r.top+7,r.left+16,r.bottom-7};
+            HBRUSH sb=CreateSolidBrush(kLayerColor[k]);FillRect(dc,&sw,sb);DeleteObject(sb);
+        }
         // Levels and Color: draggable sliders.
         // While a slider is dragged (or hovered), its label swaps to the live
         // numeric value so tuning is never blind.
         {auto of=SelectObject(dc,m_fontSmall);SetBkMode(dc,TRANSPARENT);
          for(int s=0;s<kSliderCount;++s){
             const RECT&wr=m_sliderRect[s];const RECT&tk=m_sliderTrack[s];
+            if(wr.right<=wr.left)continue;   // collapsed group, or a layer that is not attached
             const bool showVal=(s==m_dragSlider)||(m_dragSlider<0&&PtIn(wr,m_mouseX,m_mouseY));
             // The label never changes: the live value floats in a chip above
             // the knob instead, so you always see both what and how much.
@@ -1659,10 +1738,16 @@ private:
         // the file exists and the Depth A/B toggle is on.
         {const std::wstring dpv=DepthVideoPathFor(m_path);
          if(FxDepthOn()&&std::filesystem::exists(dpv))cmd<<L" --depth-video \""<<dpv<<L"\"";}
-        // Segmentation mask (<stem>_mask.mp4): forwarded, and bound into the NR
-        // pass, only while MaskNR is on - the export matches the preview A/B.
-        {const std::wstring mpv=MaskVideoPathFor(m_path);
-         if(FxMaskOn()&&std::filesystem::exists(mpv))cmd<<L" --mask-video \""<<mpv<<L"\" --nr-guides mv,mask";}
+        // Mask layers: forwarded, and bound into the NR pass, only while
+        // MaskNR is on - the export matches the preview A/B. Each enabled
+        // layer carries its structure and tone weights, the background its own.
+        if(FxMaskOn()&&m_layerCount>0){
+            for(int k=0;k<m_layerCount;++k){
+                if(!m_layerOn[k])continue;
+                cmd<<L" --mask-layer \""<<m_layerPath[k]<<L":"<<std::fixed<<std::setprecision(2)<<m_layerS[k]<<L":"<<m_layerT[k]<<L"\"";
+            }
+            cmd<<L" --mask-bg "<<std::fixed<<std::setprecision(2)<<m_maskBgS<<L":"<<m_maskBgT<<L" --nr-guides mv,mask";
+        }
         // The Color window and the DLSS toggle: forwarded whenever they differ
         // from the defaults, so the export is exactly what the preview showed.
         {const D3D12Renderer::ColorSettings d{};const auto&cs=m_colorSettings;
@@ -1690,6 +1775,68 @@ private:
         // an export was actually asked for (the exporter's own log is in %TEMP%).
         LOG("GUI export started kind="<<kind<<" total_frames_estimate="<<m_exportTotal<<" cmd="<<smru::text::WideToUtf8(cmd.str()));
         InvalidateControls();
+    }
+
+    // Slug of a prompt phrase exactly as make_mask_video.py names its layer
+    // files: lower case, any run outside [a-z0-9] becomes "_", trimmed.
+    static std::wstring PhraseSlug(std::wstring p){
+        std::wstring out;bool sep=false;
+        for(wchar_t c:p){
+            c=towlower(c);
+            const bool ok=(c>=L'a'&&c<=L'z')||(c>=L'0'&&c<=L'9');
+            if(ok){if(sep&&!out.empty())out+=L'_';sep=false;out+=c;}
+            else sep=true;
+        }
+        return out.empty()?L"phrase":out;
+    }
+    void CloseMaskLayers(){
+        for(int k=0;k<kMaxLayers;++k){m_layerDec[k].Close();m_haveLayerFrame[k]=false;m_layerName[k].clear();m_layerPath[k].clear();}
+        m_layerCount=0;m_maskLoaded=false;
+    }
+    // Finds the per-phrase layers GenMask wrote beside the movie, in the order
+    // of the remembered prompt (then alphabetical), and opens up to kMaxLayers
+    // of them; without any, the union <stem>_mask.mp4 becomes the one layer.
+    void AttachMaskLayers(const std::wstring& path){
+        CloseMaskLayers();
+        const std::filesystem::path in(path);
+        const std::wstring stem=in.stem().wstring(),prefix=stem+L"_mask_";
+        std::vector<std::wstring> files;
+        std::error_code ec;
+        for(const auto& e:std::filesystem::directory_iterator(in.parent_path(),ec)){
+            if(!e.is_regular_file(ec))continue;
+            const std::wstring name=e.path().filename().wstring();
+            if(name.size()>prefix.size()+4&&name.compare(0,prefix.size(),prefix)==0&&_wcsicmp(e.path().extension().c_str(),L".mp4")==0)files.push_back(name);
+        }
+        std::sort(files.begin(),files.end());
+        std::vector<std::wstring> ordered;
+        {std::wstring phrase;
+         auto flush=[&](){
+            const size_t a=phrase.find_first_not_of(L" \t"),b=phrase.find_last_not_of(L" \t");
+            if(a!=std::wstring::npos){
+                const std::wstring want=prefix+PhraseSlug(phrase.substr(a,b-a+1))+L".mp4";
+                if(std::find(files.begin(),files.end(),want)!=files.end()&&std::find(ordered.begin(),ordered.end(),want)==ordered.end())ordered.push_back(want);
+            }
+            phrase.clear();};
+         for(wchar_t c:m_maskPrompt){if(c==L'.'||c==L',')flush();else phrase+=c;}
+         flush();}
+        for(const auto& f:files)if(std::find(ordered.begin(),ordered.end(),f)==ordered.end())ordered.push_back(f);
+        if(ordered.empty()){const std::wstring mp=MaskVideoPathFor(path);if(std::filesystem::exists(mp,ec))ordered.push_back(std::filesystem::path(mp).filename().wstring());}
+        for(const auto& name:ordered){
+            if(m_layerCount>=kMaxLayers){LOG("Mask layers: only "<<kMaxLayers<<" attach; skipped "<<smru::text::WideToUtf8(name));continue;}
+            VideoDecoder& d=m_layerDec[m_layerCount];
+            const std::wstring full=(in.parent_path()/name).wstring();
+            if(!d.Open(full))continue;
+            if(d.Width()!=m_decoder.Width()||d.Height()!=m_decoder.Height())d.SetDecodeSize(m_decoder.Width(),m_decoder.Height());
+            if(d.Width()!=m_decoder.Width()||d.Height()!=m_decoder.Height()){d.Close();LOG("Mask layer size mismatch; skipped: "<<smru::text::WideToUtf8(name));continue;}
+            std::wstring label=L"mask";
+            if(name.size()>prefix.size()+4&&name.compare(0,prefix.size(),prefix)==0){
+                label=name.substr(prefix.size(),name.size()-prefix.size()-4);
+                std::replace(label.begin(),label.end(),L'_',L' ');
+            }
+            m_layerName[m_layerCount]=label;m_layerPath[m_layerCount]=full;m_haveLayerFrame[m_layerCount]=false;++m_layerCount;
+        }
+        m_maskLoaded=m_layerCount>0;
+        if(m_maskLoaded)LOG("Segmentation mask layers attached to live playback: "<<m_layerCount);
     }
 
     static std::wstring FlowVideoPathFor(const std::wstring& moviePath){
@@ -1772,7 +1919,7 @@ private:
         std::filesystem::path python,script;
         if(!ResolveTool(smru::kToolFlowScript,L"The flow generator",python,script))return;
         std::wstringstream cmd;
-        cmd<<L"\""<<python.wstring()<<L"\" \""<<script.wstring()<<L"\" \""<<m_path<<L"\" --size 512";
+        cmd<<L"\""<<python.wstring()<<L"\" \""<<script.wstring()<<L"\" \""<<m_path<<L"\" --size 1024";
         wchar_t tmpDir[MAX_PATH]{};GetTempPathW(MAX_PATH,tmpDir);
         smru::proc::Options spawn;spawn.workingDir=tmpDir[0]?tmpDir:nullptr;
         smru::proc::Child job;
@@ -1850,7 +1997,7 @@ private:
             // The mask texture only exists when the renderer was initialized
             // with it (same as depth/flow), so a reload is the clean attach.
             if(m_loaded&&m_path==m_maskForPath)ReloadKeepingPosition();
-            MessageBoxW(m_hwnd,(L"Mask created:\n"+mp+L"\n\nPress Mask to see it, and MaskNR to bind it into the neural pass (A/B).\nOne extra _mask_<phrase>.mp4 was written per phrase.").c_str(),T(L"app.title").c_str(),MB_ICONINFORMATION);
+            MessageBoxW(m_hwnd,(L"Mask created:\n"+mp+L"\n\nOne _mask_<phrase>.mp4 was written per phrase. The Masks group in the panel lists them: Show masks tints each one in the preview, MaskNR binds them into the neural pass, and every layer has its own structure and tone weights.").c_str(),T(L"app.title").c_str(),MB_ICONINFORMATION);
         } else {
             MessageBoxW(m_hwnd,(L"Mask generation failed (exit "+std::to_wstring(ec)+L").\n\nThe generator uses SAM 3 and falls back to Grounding DINO + SAM 2.1 when SAM 3's gated weights are not reachable, so this is usually a failed first-run download (about 1.7 GB either way) or a missing package: it needs transformers, plus sam2 for the fallback.\n\nFor SAM 3 itself, ask for access at huggingface.co/facebook/sam3 and sign in (hf auth login, or set HF_TOKEN).").c_str(),T(L"app.title").c_str(),MB_ICONERROR);
         }
@@ -1880,7 +2027,9 @@ private:
         m_lutStrength=1.0f;m_svrStrength=0.7f;
         m_nrIntensity=1.0f;m_nrLocalStructure=1.0f;m_nrSkinStructure=-1.0f;m_nrAutoMask=true;
         m_fxLut=true;m_fxSharpen=true;m_fxTone=true;m_fxFlow=true;m_fxDepth=true;m_fxMask=false;m_bypassFX=false;
-        m_motionMode=0;
+        m_motionMode=2;
+        m_maskBgS=0.0f;m_maskBgT=0.0f;m_maskOverlay=false;
+        for(int k=0;k<kMaxLayers;++k){m_layerS[k]=1.0f;m_layerT[k]=1.0f;m_layerOn[k]=true;}
         SaveVideoSettings();ApplyVideoAdjustments(true);RefreshMenu();InvalidateControls();
         LOG("Reset: all look controls back to defaults.");
     }
@@ -2105,7 +2254,7 @@ private:
         // items can never swallow clicks meant for the bar/timeline.
         const bool inPanelArea=x>=PanelX0(cw)&&x<PanelX0(cw)+SIDE_W;
         if(inPanelArea)for(const BarFrame&f:m_barFrames){
-            if(f.group<0||f.group>=7)continue;
+            if(f.group<0||f.group>=kGroupCount)continue;
             RECT cap{f.r.left,f.r.top,f.r.right,f.r.top+24};
             if(PtIn(cap,x,y)){m_groupOpen[f.group]=!m_groupOpen[f.group];SaveVideoSettings();InvalidateControls();return;}
         }
@@ -2147,6 +2296,8 @@ private:
         case 17:StartFlowGen();break;
         case 43:StartMaskGen();break;
         case 44:m_fxMask=!m_fxMask;FxChanged();break;
+        case 48:m_maskOverlay=!m_maskOverlay;ApplyVideoAdjustments(true);InvalidateControls();break;
+        case 49:case 50:case 51:case 52:m_layerOn[i-49]=!m_layerOn[i-49];FxChanged();break;
         case 45:ResetAll();break;
         case 18:ToggleBypass();break;
         case 19:m_fxLut=!m_fxLut;FxChanged();break;
@@ -2550,8 +2701,17 @@ private:
     bool m_flowLoaded=false,m_haveFlowFrame=false;
     VideoDecoder m_depthVideoDecoder;VideoFrame m_depthVideoFrame;
     bool m_depthLoaded=false,m_haveDepthFrame=false;
-    VideoDecoder m_maskDecoder;VideoFrame m_maskFrame;
-    bool m_maskLoaded=false,m_haveMaskFrame=false;
+    // Segmentation mask layers: <stem>_mask_<phrase>.mp4 (GenMask --layers), or
+    // the union <stem>_mask.mp4 as the single layer. Packed one per channel for
+    // the renderer (PackMaskLayers); composited there with the weights below.
+    static constexpr int kMaxLayers=int(D3D12Renderer::kMaxMaskLayers);
+    static constexpr COLORREF kLayerColor[4]={RGB(51,217,115),RGB(89,140,255),RGB(255,217,64),RGB(242,89,217)};   // the overlay's colours
+    VideoDecoder m_layerDec[kMaxLayers];VideoFrame m_layerFrame[kMaxLayers];bool m_haveLayerFrame[kMaxLayers]{};
+    std::wstring m_layerName[kMaxLayers],m_layerPath[kMaxLayers];int m_layerCount=0;
+    std::vector<uint8_t> m_maskPacked;
+    float m_layerS[kMaxLayers]{1.0f,1.0f,1.0f,1.0f},m_layerT[kMaxLayers]{1.0f,1.0f,1.0f,1.0f};bool m_layerOn[kMaxLayers]{true,true,true,true};
+    float m_maskBgS=0.0f,m_maskBgT=0.0f;bool m_maskOverlay=false;
+    bool m_maskLoaded=false;
     std::vector<uint8_t> m_depthPlane;
     HANDLE m_depthMapProc=nullptr;std::wstring m_depthMapForPath;
     HANDLE m_maskProc=nullptr;std::wstring m_maskForPath,m_maskPrompt;bool m_fxMask=false;

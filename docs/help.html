@@ -107,7 +107,7 @@
              → DLSS-NR evaluate, 1:1 at the output size
              → tone preserve → sharpen → LUT → display / export</pre>
   <p>The neural pass never upscales by itself. Upscaling is a deterministic resize first; the neural pass then redraws every output pixel at 1:1, which is why <em>Native</em> export (source size, no resize) gives the sharpest look of the original pixels.</p>
-  <p class="measured">Measured facts baked into the defaults: binding <code>DLSSNR.MVec</code> (even with zero vectors) removes most temporal jitter; binding <code>DLSSNR.ControlMask</code> changes the output on its own, more than the mask's content does; <code>DLSSNR.Depth</code> is ignored by the current runtime build but stays wired. The runtime exposes exactly one mask input and one set of intensity/structure/tone scalars per evaluation.</p>
+  <p class="measured">Measured facts baked into the defaults: <code>DLSSNR.MVec</code> is read in the DLSS convention (current → previous, input pixels, scale +1) — with exact vectors the output is 2.5× more stable along the motion than with zero vectors, and the estimated field (RAFT sidecar first, block matcher otherwise) is the default; the earlier −1 scale warped the history the wrong way and measured below zero vectors; binding <code>DLSSNR.ControlMask</code> changes the output on its own, more than the mask's content does; <code>DLSSNR.Depth</code> is ignored by the current runtime build but stays wired. The runtime exposes exactly one mask input and one set of intensity/structure/tone scalars per evaluation.</p>
 </section>
 
 <section id="window">
@@ -144,7 +144,7 @@
   </div>
 
   <div class="group g-mot"><h3>Motion</h3>
-    <p>Which motion vectors the neural pass receives. <strong>Zero</strong> binds an all-zero field (cleanest, no history drag). <strong>Pan</strong> derives one global pan vector per frame. <strong>Model</strong> uses the full estimated field — the built-in block matcher, or your <code>_flow.mp4</code> when the Flow toggle is on.</p>
+    <p>Which motion vectors the neural pass receives. <strong>Model</strong> (the default) uses the full estimated field — your <code>_flow.mp4</code> when the Flow toggle is on, the built-in block matcher otherwise; measured most stable along motion. <strong>Pan</strong> derives one global pan vector per frame. <strong>Zero</strong> binds an all-zero field: no history alignment at all, the fallback if the estimated field misbehaves on a clip.</p>
   </div>
 
   <div class="group g-fx"><h3>Effects</h3>
@@ -155,9 +155,20 @@
       <dt>Tone</dt><dd>Tone preserve: keep the neural detail but restore the original tone and colours.</dd>
       <dt>Flow</dt><dd>Use <code>&lt;name&gt;_flow.mp4</code> as the motion field when Motion is <em>Model</em>.</dd>
       <dt>DepthMap</dt><dd>Feed <code>&lt;name&gt;_depth.mp4</code> instead of the built-in depth proxy. Visible in the Depth view; the current runtime does not use depth, so the picture itself does not change.</dd>
-      <dt>MaskNR</dt><dd>Bind <code>&lt;name&gt;_mask.mp4</code> into the neural pass as the ControlMask. Off by default — compare against MaskNR <em>off</em>, never against a blank mask.</dd>
+      <dt>MaskNR</dt><dd>Moved to the <a href="#masks">Masks</a> group: binds the mask layers into the neural pass as its ControlMask.</dd>
       <dt>Reset</dt><dd>Every look control back to its default: colour adjustments, all levels, the neural knobs, effect toggles on, Bypass off, Motion Zero. Keeps the loaded LUT, the model pick and the layout.</dd>
     </dl>
+  </div>
+
+  <div class="group g-fx" id="masks"><h3>Masks</h3>
+    <p>Per-object control of the neural pass, the way NVIDIA's developer masking works. The runtime takes <em>one</em> control mask per frame, but that mask is an RGB weight map (red = master, green = tone, blue = structure — measured), so several objects with their own strengths are one composited mask. GenMask writes one layer per prompt phrase (<code>&lt;name&gt;_mask_&lt;phrase&gt;.mp4</code>, up to four are attached, in the prompt's order); without layers the union <code>&lt;name&gt;_mask.mp4</code> is the single layer.</p>
+    <dl>
+      <dt>MaskNR</dt><dd>Bind the layers into the neural pass (A/B toggle). While bound, the runtime's own automask is replaced by yours. Dragging any mask slider turns it on.</dd>
+      <dt>Show masks</dt><dd>Tint every enabled layer in its own colour over the preview — green, blue, yellow, magenta in the panel's order. Preview only; exports never carry it.</dd>
+      <dt>Bg Str · Bg Tone</dt><dd>Structure and tone weights for everything outside the layers. 0 / 0 leaves the background untouched, like NVIDIA's global controls at zero.</dd>
+      <dt>One pill + Struct + Tone per layer</dt><dd>The pill (with its colour swatch) turns the layer off — off means transparent, the pixels fall back to the layers below it or to the background weights. Struct is how much neural detail the object gets, Tone how much of the relight. Later layers paint over earlier ones where they overlap. The global Struct level still multiplies on top.</dd>
+    </dl>
+    <p class="measured">Measured response: the structure weight is dead below about 0.3 and near-linear above (the slider is mapped onto that range); tone at 0 still leaves about a quarter of the relight, and only a pixel that asks for neither is switched off entirely. Intensity remains a plain wet/dry blend on top of all of it.</p>
   </div>
 
   <div class="group g-ins"><h3>Inspect</h3>
@@ -218,15 +229,15 @@
     <tr><th>File</th><th>Carries</th><th>Pixel encoding</th><th>Bound when</th></tr>
     <tr><td class="k"><code>&lt;name&gt;_flow.mp4</code></td><td>Motion vectors, one per pixel: where the current pixel <em>was</em> in the previous frame (current → previous, the DLSS convention)</td><td>RGB, <code>yuv444p10le</code>. R = dx, G = dy in <strong>source pixels</strong>, mapped from −range … +range across the full code range (mid-code = no motion); B = mid-grey. The range is the file's <code>smru_flow_range</code> metadata tag (GenFlow writes 64); a file without the tag is read as the legacy 8-bit ±24 px encoding. First frame all zero. +x right, +y down.</td><td>Motion = Model and the Flow toggle on; exporter <code>--flow-video</code> with <code>--mv estimated</code></td></tr>
     <tr><td class="k"><code>&lt;name&gt;_depth.mp4</code></td><td>Relative depth</td><td>Grayscale (<code>gray</code> or <code>yuv420p</code>): <strong>bright = near</strong>, dark = far. Any consistent normalisation; the player inverts it into the runtime's 0 = near contract.</td><td>DepthMap toggle on; exporter <code>--depth-video</code> (+ <code>--nr-guides mv,depth</code>). The current runtime ignores depth.</td></tr>
-    <tr><td class="k"><code>&lt;name&gt;_mask.mp4</code></td><td>Where the neural pass should act</td><td>Grayscale: <strong>white = process here</strong>, black = leave alone; grey values are soft weights, feathered edges are fine.</td><td>MaskNR toggle on; exporter <code>--mask-video</code> with <code>--nr-guides mv,mask</code></td></tr>
-    <tr><td class="k"><code>&lt;name&gt;_mask_&lt;phrase&gt;.mp4</code></td><td>One mask per prompt phrase (from GenMask <code>--layers</code>)</td><td>Same as above</td><td>Kept for per-object control; not bound by the player yet — the union file is what attaches</td></tr>
+    <tr><td class="k"><code>&lt;name&gt;_mask.mp4</code></td><td>Where the neural pass should act (the union of every phrase)</td><td>Grayscale: <strong>white = process here</strong>, black = leave alone; grey values are soft weights, feathered edges are fine.</td><td>MaskNR on, when no per-phrase layers exist; exporter <code>--mask-video</code> (binds the mask by itself)</td></tr>
+    <tr><td class="k"><code>&lt;name&gt;_mask_&lt;phrase&gt;.mp4</code></td><td>One mask per prompt phrase (from GenMask <code>--layers</code>)</td><td>Same as above</td><td>MaskNR on: up to four layers, each with its own structure and tone in the <a href="#masks">Masks</a> group; exporter <code>--mask-layer file:structure:tone</code> (repeat per layer) and <code>--mask-bg structure:tone</code></td></tr>
     <tr><td class="k"><code>&lt;name&gt;_svr.mp4</code></td><td>A SeedVR-restored version of the movie</td><td>Ordinary colour video</td><td>Loaded as the input when you accept the prompt after a SeedVR job</td></tr>
   </table></div>
   <ul>
     <li>Resolution may differ from the movie — the guide is rescaled to the source size on decode (a size mismatch that cannot be rescaled is skipped and logged).</li>
     <li>Match the frame rate and frame count. If the guide is shorter, its last frame is reused.</li>
     <li>Guides are calibrated to the source geometry, so the exporter drops them when <code>--scaler lanczos</code> resizes on the CPU first.</li>
-    <li>Encode near-lossless (<code>-crf 6</code> or better): one 10-bit flow step over ±64 px is already 0.15 px. The old 8-bit ±24 px files step 0.19 px and clip on any pan faster than 24 px per frame — a handheld 720p shot gets there.</li>
+    <li>Encode with a fixed low quantiser (<code>-qp 4</code>, what GenFlow writes), not a rate-controlled <code>-crf</code>: measured on a field with sharp motion boundaries, <code>-crf 6</code> leaves 0.1% of the vectors more than 1 px off (ringing up to 12 px along the edges of moving objects), <code>-qp 4</code> keeps every vector within 0.75 px at about 2.3× the file size. One 10-bit flow step over ±64 px is 0.15 px. The old 8-bit ±24 px files step 0.19 px and clip on any pan faster than 24 px per frame — a handheld 720p shot gets there.</li>
   </ul>
 </section>
 
@@ -241,7 +252,7 @@ R = clamp( dx / (2 × range) × 65535 + 32768 , 0, 65535 )   16-bit PNG
 G = clamp( dy / (2 × range) × 65535 + 32768 , 0, 65535 )
 B = 32768</pre>
   <p>If your source gives previous → current vectors (most optical-flow tools and Blender's Vector pass do), negate them first. Then encode 10-bit and write the range into the file:</p>
-<pre>ffmpeg -framerate 24 -i flow_%04d.png -c:v libx264 -preset fast -crf 6 -pix_fmt yuv444p10le -movflags use_metadata_tags -metadata smru_flow_range=64 movie_flow.mp4</pre>
+<pre>ffmpeg -framerate 24 -i flow_%04d.png -c:v libx264 -preset fast -qp 4 -pix_fmt yuv444p10le -movflags use_metadata_tags -metadata smru_flow_range=64 movie_flow.mp4</pre>
 
   <h3>Depth from any model or a Z pass</h3>
   <p>Normalise so near is bright. From a renderer's Z (distance) pass: <code>value = 1 − (z − z_near) / (z_far − z_near)</code>, clamped 0…1, then ×255. Keep the normalisation stable across the shot or the guide will pulse.</p>
@@ -261,7 +272,7 @@ B = 32768</pre>
   <p>The Gen buttons run Python scripts from the <code>tools\</code> folder with a Python that has <code>torch</code>, <code>torchvision</code> and <code>transformers</code> (ComfyUI's <code>python_embeded\python.exe</code> is the reference setup; GenMask needs <code>transformers</code> 5.x, plus <code>sam2</code> for its fallback). First runs download model weights. SAM 3's weights are gated: ask for access at <code>huggingface.co/facebook/sam3</code> and sign in (<code>hf auth login</code>, or set <code>HF_TOKEN</code>) - without that, GenMask falls back to Grounding DINO + SAM 2.1, which is not gated.</p>
   <div class="tbl"><table>
     <tr><th>Button · script</th><th>Model</th><th>Options (command line)</th></tr>
-    <tr><td class="k">GenFlow · <code>make_flow_video.py</code></td><td>RAFT-small (torchvision), 12 refinement steps, inference long side 512 px</td><td><code>--size</code>, <code>--iters</code>, <code>--backend trt</code></td></tr>
+    <tr><td class="k">GenFlow · <code>make_flow_video.py</code></td><td>RAFT-small (torchvision), 12 refinement steps, inference long side 1024 px</td><td><code>--size</code>, <code>--iters</code>, <code>--backend trt</code></td></tr>
     <tr><td class="k">GenDepth · <code>make_depth_video.py</code></td><td>Depth Anything V2 Small, long side 518 px, aspect kept, temporally smoothed 2–98 % range</td><td><code>--size</code>, <code>--fp32</code>, <code>--backend trt</code></td></tr>
     <tr><td class="k">GenMask · <code>make_mask_video.py</code></td><td>SAM 3 (text → masks directly), falling back to Grounding DINO + SAM 2.1</td><td><code>--prompt "person. face. hair."</code>, <code>--model auto|sam3|sam2</code>, <code>--layers</code>, <code>--invert</code>, <code>--feather N</code>, <code>--threshold</code>, <code>--mask-threshold</code>, <code>--detect-every N</code></td></tr>
     <tr><td class="k">SeedVR · <code>run_seedvr.py</code></td><td>SeedVR2 restoration (ComfyUI pack)</td><td><code>--strength</code></td></tr>
@@ -286,7 +297,8 @@ B = 32768</pre>
     <tr><td class="k"><code>--nr-style 0|1|2</code></td><td>Model A / B / C</td></tr>
     <tr><td class="k"><code>--nr-intensity --nr-structure --nr-skin --nr-automask</code></td><td>The neural knobs (0–1, 0–2, −1 or 0–2, on/off)</td></tr>
     <tr><td class="k"><code>--mv zero|global|estimated</code></td><td>Motion mode</td></tr>
-    <tr><td class="k"><code>--flow-video --depth-video --mask-video</code></td><td>Attach guide files</td></tr>
+    <tr><td class="k"><code>--flow-video --depth-video --mask-video</code></td><td>Attach guide files (a mask file binds the ControlMask by itself)</td></tr>
+    <tr><td class="k"><code>--mask-layer F:S:T --mask-bg S:T</code></td><td>Per-object masks: up to four layers with their structure and tone weights (0–1), painted in order, and the weights outside them</td></tr>
     <tr><td class="k"><code>--nr-guides off|on|all|mv,depth,mask</code></td><td>Which guides are bound (default: MVec only)</td></tr>
     <tr><td class="k"><code>--nr-mask-mode bias|white|inv</code></td><td>ControlMask content when bound without a mask video</td></tr>
     <tr><td class="k"><code>--tone preserve|nr --tone-mix X</code></td><td>Tone preserve and its mix</td></tr>
@@ -327,7 +339,7 @@ B = 32768</pre>
     <dt>Export failed</dt><dd>The message shows the exporter's last lines; the full log is <code>SmackMyRezUpExport.log</code> in <code>%TEMP%</code>. The player's own log carries the exact command line.</dd>
     <dt>My LUT disappeared</dt><dd>The path in the INI no longer exists. The player looks for the same file name in <code>luts\</code> and repairs the setting; otherwise load it again.</dd>
     <dt>DepthMap does nothing</dt><dd>Correct — the current runtime ignores depth. The Depth view still shows what it is being handed.</dd>
-    <dt>MaskNR looks different even with a blank mask</dt><dd>Binding the ControlMask changes the output by itself. Always A/B against MaskNR off.</dd>
+    <dt>MaskNR looks different even with a blank mask</dt><dd>A bound ControlMask replaces the runtime's automask, so the background changes too unless Bg Str / Bg Tone are set. A/B against MaskNR off.</dd>
     <dt>Boiling detail on static shots</dt><dd>Lower Struct, raise Smooth, or set Motion to Zero.</dd>
     <dt>A ghost of the previous shot after a cut</dt><dd>The exporter resets the neural history on detected cuts (<code>--cut-reset on</code>); raise <code>--cut-warmup</code> if the first frame after a cut is soft.</dd>
   </dl>
@@ -338,7 +350,7 @@ B = 32768</pre>
   <p>The runtime was trained on a game's exact per-pixel motion field and depth buffer. Everything recovered from pixels is an approximation, so the guides are where the biggest gains remain.</p>
   <h3>Motion vectors</h3>
   <ul>
-    <li><strong>Resolution.</strong> GenFlow estimates at a 512 px long side and upsamples; run <code>--size</code> at the source width for HD material.</li>
+    <li><strong>Resolution.</strong> GenFlow estimates at a 1024 px long side and upsamples (measured better than 512 on 720p handheld footage at the same wall time); <code>--size</code> can go to the source width for HD material at the cost of memory — RAFT's correlation volume grows with the fourth power of the inference size.</li>
     <li><strong>Model.</strong> RAFT-small trades accuracy for speed; RAFT-large or SEA-RAFT are drop-in upgrades with the same output contract.</li>
     <li><strong>Consistency.</strong> A forward–backward check (flow t→t−1 against t−1→t) finds occluded and unreliable pixels; zeroing those beats trusting a wrong vector, because the runtime rewards smooth, consistent fields.</li>
     <li><strong>Geometry.</strong> Fit the camera motion to the flow, render the dense field from the depth guide (parallax ∝ 1/depth), and keep RAFT only for the residual of independently moving objects. That reproduces the smooth, depth-shaped field a renderer produces.</li>

@@ -21,6 +21,39 @@ static D3D12_RESOURCE_DESC Tex2D(DXGI_FORMAT fmt,uint32_t w,uint32_t h,D3D12_RES
     D3D12_RESOURCE_DESC d{}; d.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D; d.Width=w; d.Height=h;
     d.DepthOrArraySize=1; d.MipLevels=1; d.Format=fmt; d.SampleDesc={1,0}; d.Layout=D3D12_TEXTURE_LAYOUT_UNKNOWN; d.Flags=flags; return d;
 }
+// SMRU_MASK_PROBE=<format>[:<channels>] picks the resource format the
+// ControlMask is created in and what each of its channels carries, so the
+// runtime's expectations can be probed without a rebuild. Formats: r8 rg8
+// rgba8 r16 rg16 rgba16 r16f rg16f rgba16f r32f rg32f rgba32f. Channels: up to
+// four of 0 (constant 0), 1 (constant 1), u (the mask value), i (its inverse);
+// default u111. Diagnostic only; the shipped layout is r8:u.
+static void ReadMaskProbe(DXGI_FORMAT& fmt, float ch[4]) {
+    wchar_t buf[64]{};
+    if (GetEnvironmentVariableW(L"SMRU_MASK_PROBE", buf, 64) == 0) return;
+    std::wstring v(buf);
+    std::wstring f = v, c;
+    if (const auto p = v.find(L':'); p != std::wstring::npos) { f = v.substr(0, p); c = v.substr(p + 1); }
+    struct { const wchar_t* name; DXGI_FORMAT fmt; } table[] = {
+        {L"r8", DXGI_FORMAT_R8_UNORM}, {L"rg8", DXGI_FORMAT_R8G8_UNORM}, {L"rgba8", DXGI_FORMAT_R8G8B8A8_UNORM},
+        {L"r16", DXGI_FORMAT_R16_UNORM}, {L"rg16", DXGI_FORMAT_R16G16_UNORM}, {L"rgba16", DXGI_FORMAT_R16G16B16A16_UNORM},
+        {L"r16f", DXGI_FORMAT_R16_FLOAT}, {L"rg16f", DXGI_FORMAT_R16G16_FLOAT}, {L"rgba16f", DXGI_FORMAT_R16G16B16A16_FLOAT},
+        {L"r32f", DXGI_FORMAT_R32_FLOAT}, {L"rg32f", DXGI_FORMAT_R32G32_FLOAT}, {L"rgba32f", DXGI_FORMAT_R32G32B32A32_FLOAT},
+    };
+    for (const auto& t : table) if (f == t.name) fmt = t.fmt;
+    for (size_t k = 0; k < 4 && k < c.size(); ++k)
+        ch[k] = c[k] == L'0' ? 0.0f : c[k] == L'1' ? 1.0f : c[k] == L'i' ? 3.0f : 2.0f;
+}
+static const char* FormatName(DXGI_FORMAT f) {
+    switch (f) {
+        case DXGI_FORMAT_R8_UNORM: return "R8_UNORM"; case DXGI_FORMAT_R8G8_UNORM: return "R8G8_UNORM";
+        case DXGI_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8_UNORM"; case DXGI_FORMAT_R16_UNORM: return "R16_UNORM";
+        case DXGI_FORMAT_R16G16_UNORM: return "R16G16_UNORM"; case DXGI_FORMAT_R16G16B16A16_UNORM: return "R16G16B16A16_UNORM";
+        case DXGI_FORMAT_R16_FLOAT: return "R16_FLOAT"; case DXGI_FORMAT_R16G16_FLOAT: return "R16G16_FLOAT";
+        case DXGI_FORMAT_R16G16B16A16_FLOAT: return "R16G16B16A16_FLOAT"; case DXGI_FORMAT_R32_FLOAT: return "R32_FLOAT";
+        case DXGI_FORMAT_R32G32_FLOAT: return "R32G32_FLOAT"; case DXGI_FORMAT_R32G32B32A32_FLOAT: return "R32G32B32A32_FLOAT";
+        default: return "?";
+    }
+}
 static D3D12_RESOURCE_BARRIER Transition(ID3D12Resource* r,D3D12_RESOURCE_STATES a,D3D12_RESOURCE_STATES b) {
     D3D12_RESOURCE_BARRIER x{}; x.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION; x.Transition.pResource=r;
     x.Transition.StateBefore=a; x.Transition.StateAfter=b; x.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES; return x;
@@ -46,6 +79,7 @@ D3D12Renderer::~D3D12Renderer() {
 bool D3D12Renderer::Initialize(HWND hwnd,uint32_t sourceW,uint32_t sourceH,uint32_t outputW,uint32_t outputH,uint32_t gridW,uint32_t gridH) {
     m_hwnd=hwnd; m_sourceW=sourceW; m_sourceH=sourceH; m_outputW=outputW; m_outputH=outputH; m_gridW=gridW; m_gridH=gridH;
     if(!m_gridW||!m_gridH)return false;
+    ReadMaskProbe(m_maskFormat,m_maskChannels);
     if(!CreateDeviceAndSwapchain(hwnd) || !CreateHeapsAndBackbuffers() || !CreatePipelines()) return false;
     if(!InitializeDLSS() && !m_srActive) {
         LOG("DLSS unavailable; using D3D12 scaler fallback.");
@@ -119,12 +153,17 @@ Texture2D Aux0:register(t2);
 Texture2D Aux1:register(t3);
 Texture2D Aux2:register(t4);
 Texture2D OverlayLabel:register(t5);   // 512x64 atlas: left half "DLSS OFF", right half "DLSS ON"
+Texture2D MaskLayers:register(t6);     // packed segmentation layers, one per channel (present overlay)
 cbuffer Params:register(b0){
     float2 JitterUV;
     float2 Misc;    // convert passes: x = LUT strength, y = LUT size N
     float4 ColorA; // present: brightness, contrast, saturation, gamma | convert: xyz = LUT domain scale, w = pre-sharpen amount
     float4 ColorB; // present: temperature, tint                     | convert: xyz = LUT domain offset
     float4 Extra;  // present: x = compare mode, y = split position, z = post-sharpen amount
+    // Mask layers (guide expansion and the present overlay): A = background
+    // structure, background tone, layer count, overlay on; B = layers 0 and 1
+    // as (structure, tone) pairs; C = layers 2 and 3; D = per-layer enables.
+    float4 MaskA; float4 MaskB; float4 MaskC; float4 MaskD;
 }
 struct V{float4 p:SV_Position;float2 uv:TEXCOORD0;};
 V VS(uint id:SV_VertexID){float2 uv=float2((id<<1)&2,id&2);V o;o.uv=uv;o.p=float4(uv.x*2-1,1-uv.y*2,0,1);return o;}
@@ -207,10 +246,22 @@ float3 SampleOutSharp(float2 uv){
 // (full pipeline) and "before" (Aux2 = the NR input, m_dlssColor, linear) are
 // both sampled at the SAME content uv so the two halves stay aligned under zoom;
 // only the split coordinate is screen-space. A thin line + a grab dot mark it.
+// Preview overlay of the segmentation layers (MaskA.w): every enabled layer
+// tints the picture in its own colour, in the order the Masks panel lists
+// them. Present stage only; the exporter never raises the flag.
+float3 MaskOverlay(float3 c,float2 uv){
+    if(MaskA.w<0.5)return c;
+    float4 L=MaskLayers.SampleLevel(S,uv,0)*MaskD;
+    c=lerp(c,float3(0.20,0.85,0.45),L.r*0.5);
+    c=lerp(c,float3(0.35,0.55,1.00),L.g*0.5);
+    c=lerp(c,float3(1.00,0.85,0.25),L.b*0.5);
+    c=lerp(c,float3(0.95,0.35,0.85),L.a*0.5);
+    return c;
+}
 float4 PSPresent(V i):SV_Target{
     float2 uv=ZoomUV(i.uv);
     float3 c=SampleOutSharp(uv);c=ApplyVideoAdjustments(c);
-    float3 after=LinearToSRGB(c);
+    float3 after=MaskOverlay(LinearToSRGB(c),uv);
     int cmp=(int)(Extra.x+0.5);
     if(cmp>0){
         // Aux2 in compare mode is the decoded source: 8-bit sRGB-encoded
@@ -290,7 +341,7 @@ float4 PSPresentTone(V i):SV_Target{
     float3 c=lerp(o,saturate(r+delta),saturate(Misc.x));
     float3 lin=SRGBToLinear(c);
     lin=ApplyVideoAdjustments(lin);
-    return float4(LinearToSRGB(lin),1);
+    return float4(MaskOverlay(LinearToSRGB(lin),uv),1);
 }
 )" R"(
 // NR Smooth: temporal EMA over the NR CONTRIBUTION (output - input, per
@@ -347,51 +398,74 @@ float4 PSMotion(V i):SV_Target{
     return float4(1.0-rad*(1.0-c),1);
 }
 float4 PSDepth(V i):SV_Target{float d=saturate(T.SampleLevel(S,ZoomUV(i.uv),0).r);d=pow(d,0.7);return float4(d,d,d,1);}
+// Mask view: the ControlMask as the runtime reads it - red = master weight,
+// green = tone weight, blue = structure weight (white = full effect).
+float4 PSMaskView(V i):SV_Target{return float4(saturate(T.SampleLevel(S,ZoomUV(i.uv),0).rgb),1);}
     // Depth comes directly from compact-guide B and is written through SV_Depth into
     // the exact typeless/D32 resource that NGX receives later in the frame.
     float PSWriteDepth(V i):SV_Depth{return saturate(T.SampleLevel(S,i.uv+JitterUV,0).b);}
     // External model-estimated depth: a full-res single-channel texture (R16),
     // 0 = near, 1 = far, replacing the compact-grid heuristic proxy.
     float PSWriteDepthExt(V i):SV_Depth{return saturate(T.SampleLevel(S,i.uv+JitterUV,0).r);}
-    struct GuideOut{float2 mv:SV_Target0;float bias:SV_Target1;};
-    // Mask semantics for the NR runtime (measured): ControlMask = "process
-    // here". ColorA.x selects what the bias RT carries:
-    //   0 = raw uncertainty bias (historical; suppresses NR if bound)
-    //   1 = white (process everywhere - neutral when bound)
-    //   2 = inverted uncertainty (process where the flow is confident)
-    // ColorA.y = 1 when a model mask (_mask.mp4, white = process here) is bound
-    // in Aux1; it then replaces the block-matcher uncertainty as the source.
-    // The model mask keeps its soft edges - only the block-matcher source is
-    // hard-thresholded, because that one is a per-block pass/fail flag.
-    float BiasOut(float2 uv,float w){
-        float u=ColorA.y>=0.5?saturate(Aux1.SampleLevel(S,uv,0).r):(w>=0.5?1.0:0.0);
-        float m=ColorA.x;return m>=1.5?1.0-u:(m>=0.5?1.0:u);
+    struct GuideOut{float2 mv:SV_Target0;float4 bias:SV_Target1;};
+    // ControlMask channel layout (SMRU_MASK_PROBE): Extra holds one code per
+    // channel of the mask texture - 0 = constant 0, 1 = constant 1, 2 = the
+    // mask value, 3 = its inverse. Single-channel formats keep .x only.
+    float4 MaskChannels(float u){
+        float4 c=Extra;float4 r;
+        [unroll]for(int k=0;k<4;++k)r[k]=c[k]<0.5?0.0:(c[k]<1.5?1.0:(c[k]<2.5?u:1.0-u));
+        return r;
+    }
+    // The ControlMask the NR runtime reads (measured): R = master weight,
+    // G = tone weight, B = structure weight, A ignored.
+    // Without a mask video (ColorA.y = 0) the block matcher's per-block
+    // confidence is the source, shaped by ColorA.x: 0 = as measured, 1 =
+    // white (process everywhere), 2 = inverted; MaskChannels lays it out.
+    // With segmentation layers bound in Aux1 (one per channel, soft edges
+    // kept) every pixel starts at the background weights (MaskA.xy) and each
+    // enabled layer paints its own weights over them by its alpha, later
+    // layers on top. The runtime's structure response is dead below ~0.3
+    // and near-linear above, so the slider is mapped onto that range; the
+    // master is raised wherever anything is asked for, and only a pixel
+    // that wants neither structure nor tone is switched off entirely.
+    float4 ControlMask(float2 uv,float w){
+        if(ColorA.y<0.5){float u=w>=0.5?1.0:0.0;float m=ColorA.x;u=m>=1.5?1.0-u:(m>=0.5?1.0:u);return MaskChannels(u);}
+        float4 L=saturate(Aux1.SampleLevel(S,uv,0))*MaskD;
+        float st=MaskA.x,tn=MaskA.y;
+        st=lerp(st,MaskB.x,L.r);tn=lerp(tn,MaskB.y,L.r);
+        st=lerp(st,MaskB.z,L.g);tn=lerp(tn,MaskB.w,L.g);
+        st=lerp(st,MaskC.x,L.b);tn=lerp(tn,MaskC.y,L.b);
+        st=lerp(st,MaskC.z,L.a);tn=lerp(tn,MaskC.w,L.a);
+        float b=st>0.001?0.3+0.7*st:0.0;
+        return float4(saturate(max(st,tn)*4.0),tn,b,1.0);
     }
     // The expanded field is always the estimated one so the MV debug view can
     // show it; Motion=Zero is honoured at NGX bind time with a zero texture.
-    GuideOut PSExpandGuides(V i){float4 g=T.SampleLevel(S,i.uv+JitterUV,0);GuideOut o;o.mv=g.xy;o.bias=BiasOut(i.uv+JitterUV,g.w);return o;}
+    GuideOut PSExpandGuides(V i){float4 g=T.SampleLevel(S,i.uv+JitterUV,0);GuideOut o;o.mv=g.xy;o.bias=ControlMask(i.uv+JitterUV,g.w);return o;}
     // External per-pixel flow (_flow.mp4): R/G encode [-range..range] source px
     // around mid-code. Misc.xy carries decode-scale = 2*range * (render / source)
     // so the MV lands in DLSS-input pixels. Bias mask still comes from the grid.
     GuideOut PSExpandGuidesExt(V i){
         float4 g=T.SampleLevel(S,i.uv+JitterUV,0);
         float2 e=Aux0.SampleLevel(S,i.uv+JitterUV,0).rg;
-        GuideOut o;o.mv=(e-0.5)*float2(Misc.x,Misc.y);o.bias=BiasOut(i.uv+JitterUV,g.w);return o;
+        GuideOut o;o.mv=(e-0.5)*float2(Misc.x,Misc.y);o.bias=ControlMask(i.uv+JitterUV,g.w);return o;
     }
 )";
-    UINT flags=D3DCOMPILE_OPTIMIZATION_LEVEL3;ComPtr<ID3DBlob>vs,convert,convertLut,present,motion,depth,depthWrite,depthWriteExt,expand,err;
+    UINT flags=D3DCOMPILE_OPTIMIZATION_LEVEL3;ComPtr<ID3DBlob>vs,convert,convertLut,present,motion,depth,depthWrite,depthWriteExt,expand,maskView,err;
     auto C=[&](const char*entry,const char*target,ComPtr<ID3DBlob>&out)->bool{err.Reset();HRESULT hr=D3DCompile(hlsl,strlen(hlsl),nullptr,nullptr,nullptr,entry,target,flags,0,&out,&err);if(FAILED(hr)){if(err)LOG((char*)err->GetBufferPointer());return false;}return true;};
     ComPtr<ID3DBlob>downPair,presentTone,expandExt,encodeSrgb,decodeSrgb,smooth;
-    if(!C("VS","vs_5_1",vs)||!C("PSConvert","ps_5_1",convert)||!C("PSConvertLUT","ps_5_1",convertLut)||!C("PSPresent","ps_5_1",present)||!C("PSPresentTone","ps_5_1",presentTone)||!C("PSDownPair","ps_5_1",downPair)||!C("PSSmooth","ps_5_1",smooth)||!C("PSMotion","ps_5_1",motion)||!C("PSDepth","ps_5_1",depth)||!C("PSWriteDepth","ps_5_1",depthWrite)||!C("PSWriteDepthExt","ps_5_1",depthWriteExt)||!C("PSExpandGuides","ps_5_1",expand)||!C("PSExpandGuidesExt","ps_5_1",expandExt)||!C("PSEncodeSRGB","ps_5_1",encodeSrgb)||!C("PSDecodeSRGB","ps_5_1",decodeSrgb))return false;
+    if(!C("VS","vs_5_1",vs)||!C("PSConvert","ps_5_1",convert)||!C("PSConvertLUT","ps_5_1",convertLut)||!C("PSPresent","ps_5_1",present)||!C("PSPresentTone","ps_5_1",presentTone)||!C("PSDownPair","ps_5_1",downPair)||!C("PSSmooth","ps_5_1",smooth)||!C("PSMotion","ps_5_1",motion)||!C("PSDepth","ps_5_1",depth)||!C("PSMaskView","ps_5_1",maskView)||!C("PSWriteDepth","ps_5_1",depthWrite)||!C("PSWriteDepthExt","ps_5_1",depthWriteExt)||!C("PSExpandGuides","ps_5_1",expand)||!C("PSExpandGuidesExt","ps_5_1",expandExt)||!C("PSEncodeSRGB","ps_5_1",encodeSrgb)||!C("PSDecodeSRGB","ps_5_1",decodeSrgb))return false;
     D3D12_DESCRIPTOR_RANGE range{};range.RangeType=D3D12_DESCRIPTOR_RANGE_TYPE_SRV;range.NumDescriptors=1;range.BaseShaderRegister=0;
     D3D12_DESCRIPTOR_RANGE lutRange{};lutRange.RangeType=D3D12_DESCRIPTOR_RANGE_TYPE_SRV;lutRange.NumDescriptors=4;lutRange.BaseShaderRegister=1;
     D3D12_DESCRIPTOR_RANGE ovRange{};ovRange.RangeType=D3D12_DESCRIPTOR_RANGE_TYPE_SRV;ovRange.NumDescriptors=1;ovRange.BaseShaderRegister=5; // t5 = overlay label atlas
-    D3D12_ROOT_PARAMETER rp[4]{};rp[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;rp[0].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;rp[0].DescriptorTable.NumDescriptorRanges=1;rp[0].DescriptorTable.pDescriptorRanges=&range;
-    rp[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;rp[1].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;rp[1].Constants.Num32BitValues=16;rp[1].Constants.ShaderRegister=0;
+    D3D12_DESCRIPTOR_RANGE mlRange{};mlRange.RangeType=D3D12_DESCRIPTOR_RANGE_TYPE_SRV;mlRange.NumDescriptors=1;mlRange.BaseShaderRegister=6; // t6 = packed mask layers
+    D3D12_ROOT_PARAMETER rp[5]{};rp[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;rp[0].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;rp[0].DescriptorTable.NumDescriptorRanges=1;rp[0].DescriptorTable.pDescriptorRanges=&range;
+    rp[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;rp[1].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;rp[1].Constants.Num32BitValues=32;rp[1].Constants.ShaderRegister=0;
     rp[2].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;rp[2].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;rp[2].DescriptorTable.NumDescriptorRanges=1;rp[2].DescriptorTable.pDescriptorRanges=&lutRange;
     rp[3].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;rp[3].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;rp[3].DescriptorTable.NumDescriptorRanges=1;rp[3].DescriptorTable.pDescriptorRanges=&ovRange;
+    rp[4].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;rp[4].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;rp[4].DescriptorTable.NumDescriptorRanges=1;rp[4].DescriptorTable.pDescriptorRanges=&mlRange;
     D3D12_STATIC_SAMPLER_DESC smp{};smp.Filter=D3D12_FILTER_MIN_MAG_MIP_LINEAR;smp.AddressU=smp.AddressV=smp.AddressW=D3D12_TEXTURE_ADDRESS_MODE_CLAMP;smp.ShaderRegister=0;smp.ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;smp.MaxLOD=D3D12_FLOAT32_MAX;
-    D3D12_ROOT_SIGNATURE_DESC rs{};rs.NumParameters=4;rs.pParameters=rp;rs.NumStaticSamplers=1;rs.pStaticSamplers=&smp;rs.Flags=D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    D3D12_ROOT_SIGNATURE_DESC rs{};rs.NumParameters=5;rs.pParameters=rp;rs.NumStaticSamplers=1;rs.pStaticSamplers=&smp;rs.Flags=D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
     ComPtr<ID3DBlob>sig;if(!HR(D3D12SerializeRootSignature(&rs,D3D_ROOT_SIGNATURE_VERSION_1,&sig,&err),"SerializeRootSignature"))return false;
     if(!HR(m_device->CreateRootSignature(0,sig->GetBufferPointer(),sig->GetBufferSize(),IID_PPV_ARGS(&m_rootSig)),"CreateRootSignature"))return false;
     D3D12_GRAPHICS_PIPELINE_STATE_DESC p{};p.pRootSignature=m_rootSig.Get();p.VS={vs->GetBufferPointer(),vs->GetBufferSize()};p.PS={convert->GetBufferPointer(),convert->GetBufferSize()};
@@ -416,7 +490,8 @@ float4 PSDepth(V i):SV_Target{float d=saturate(T.SampleLevel(S,ZoomUV(i.uv),0).r
     p.RTVFormats[0]=DXGI_FORMAT_R8G8B8A8_UNORM;
     p.PS={motion->GetBufferPointer(),motion->GetBufferSize()};if(!HR(m_device->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&m_psoMotionDebug)),"Create MV debug PSO"))return false;
     p.PS={depth->GetBufferPointer(),depth->GetBufferSize()};if(!HR(m_device->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&m_psoDepthDebug)),"Create depth debug PSO"))return false;
-    p.PS={expand->GetBufferPointer(),expand->GetBufferSize()};p.NumRenderTargets=2;p.RTVFormats[0]=DXGI_FORMAT_R16G16_FLOAT;p.RTVFormats[1]=DXGI_FORMAT_R8_UNORM;p.RTVFormats[2]=DXGI_FORMAT_UNKNOWN;
+    p.PS={maskView->GetBufferPointer(),maskView->GetBufferSize()};if(!HR(m_device->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&m_psoMaskDebug)),"Create mask view PSO"))return false;
+    p.PS={expand->GetBufferPointer(),expand->GetBufferSize()};p.NumRenderTargets=2;p.RTVFormats[0]=DXGI_FORMAT_R16G16_FLOAT;p.RTVFormats[1]=m_maskFormat;p.RTVFormats[2]=DXGI_FORMAT_UNKNOWN;
     if(!HR(m_device->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&m_psoExpandGuides)),"Create GPU guide expansion PSO"))return false;
     p.PS={expandExt->GetBufferPointer(),expandExt->GetBufferSize()};
     if(!HR(m_device->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&m_psoExpandGuidesExt)),"Create external-flow guide expansion PSO"))return false;
@@ -425,7 +500,7 @@ float4 PSDepth(V i):SV_Target{float d=saturate(T.SampleLevel(S,ZoomUV(i.uv),0).r
     // NR Smooth shares the pair layout: two FP16 targets (smoothed picture, delta).
     p.PS={smooth->GetBufferPointer(),smooth->GetBufferSize()};
     if(!HR(m_device->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&m_psoSmooth)),"Create NR Smooth PSO"))return false;
-    p.RTVFormats[0]=DXGI_FORMAT_R16G16_FLOAT;p.RTVFormats[1]=DXGI_FORMAT_R8_UNORM;
+    p.RTVFormats[0]=DXGI_FORMAT_R16G16_FLOAT;p.RTVFormats[1]=m_maskFormat;
     p.PS={depthWrite->GetBufferPointer(),depthWrite->GetBufferSize()};
     p.NumRenderTargets=0;p.RTVFormats[0]=DXGI_FORMAT_UNKNOWN;p.RTVFormats[1]=DXGI_FORMAT_UNKNOWN;p.RTVFormats[2]=DXGI_FORMAT_UNKNOWN;p.DSVFormat=DXGI_FORMAT_D32_FLOAT;
     p.DepthStencilState.DepthEnable=TRUE;p.DepthStencilState.DepthWriteMask=D3D12_DEPTH_WRITE_MASK_ALL;p.DepthStencilState.DepthFunc=D3D12_COMPARISON_FUNC_ALWAYS;p.DepthStencilState.StencilEnable=FALSE;
@@ -526,8 +601,8 @@ bool D3D12Renderer::CreateVideoResources(){
     srv.Format=DXGI_FORMAT_R32_FLOAT;m_device->CreateShaderResourceView(m_depth.Get(),&srv,SRVCPU(3));
     D3D12_DEPTH_STENCIL_VIEW_DESC dsv{};dsv.Format=DXGI_FORMAT_D32_FLOAT;dsv.ViewDimension=D3D12_DSV_DIMENSION_TEXTURE2D;m_device->CreateDepthStencilView(m_depth.Get(),&dsv,DSV());
 
-    auto bias=Tex2D(DXGI_FORMAT_R8_UNORM,m_renderW,m_renderH,D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);if(!HR(m_device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bias,D3D12_RESOURCE_STATE_RENDER_TARGET,nullptr,IID_PPV_ARGS(&m_biasCurrent)),"Create BiasCurrentColor mask"))return false;
-    m_biasCurrent->SetName(L"DLSS_BiasCurrentColor_Disocclusion_R8");srv.Format=DXGI_FORMAT_R8_UNORM;m_device->CreateShaderResourceView(m_biasCurrent.Get(),&srv,SRVCPU(5));m_device->CreateRenderTargetView(m_biasCurrent.Get(),nullptr,RTV(FrameCount+2));
+    auto bias=Tex2D(m_maskFormat,m_renderW,m_renderH,D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);if(!HR(m_device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&bias,D3D12_RESOURCE_STATE_RENDER_TARGET,nullptr,IID_PPV_ARGS(&m_biasCurrent)),"Create BiasCurrentColor mask"))return false;
+    m_biasCurrent->SetName(L"DLSS_ControlMask");srv.Format=m_maskFormat;m_device->CreateShaderResourceView(m_biasCurrent.Get(),&srv,SRVCPU(5));m_device->CreateRenderTargetView(m_biasCurrent.Get(),nullptr,RTV(FrameCount+2));
     auto grid=Tex2D(DXGI_FORMAT_R32G32B32A32_FLOAT,m_gridW,m_gridH,D3D12_RESOURCE_FLAG_NONE);if(!HR(m_device->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&grid,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&m_guideGrid)),"Create compact temporal guide grid"))return false;
     m_guideGrid->SetName(L"DLSS_CompactGuideGrid_RGBA32F");
     for(uint32_t i=0;i<FrameCount;++i) {
@@ -666,7 +741,7 @@ bool D3D12Renderer::CreateVideoResources(){
     LOG("DLSS resource contract ready: Color=R16G16B16A16_FLOAT " << m_renderW << "x" << m_renderH
         << ", MV=R16G16_FLOAT " << m_renderW << "x" << m_renderH
         << ", Depth=R32_TYPELESS resource / D32_FLOAT DSV / R32_FLOAT SRV " << m_renderW << "x" << m_renderH
-        << ", BiasCurrentColor=R8_UNORM " << m_renderW << "x" << m_renderH
+        << ", ControlMask=" << FormatName(m_maskFormat) << " " << m_renderW << "x" << m_renderH
         << ", Output=R16G16B16A16_FLOAT UAV " << m_outputW << "x" << m_outputH
         << ", CompactGrid=R32G32B32A32_FLOAT " << m_gridW << "x" << m_gridH << " -> GPU MV/bias expansion + direct SV_Depth write");
     return true;
@@ -753,6 +828,21 @@ bool D3D12Renderer::CreateOverlayLabels(){
 void D3D12Renderer::CopyMappedRows(uint8_t*mapped,const D3D12_PLACED_SUBRESOURCE_FOOTPRINT&fp,const void*src,size_t tight,uint32_t rows){const uint8_t*s=static_cast<const uint8_t*>(src);for(uint32_t y=0;y<rows;++y)memcpy(mapped+fp.Offset+size_t(fp.Footprint.RowPitch)*y,s+tight*y,tight);}
 
 float D3D12Renderer::Halton(uint32_t index,uint32_t base){float f=1.0f,r=0.0f;while(index){f/=float(base);r+=f*float(index%base);index/=base;}return r;}
+
+void D3D12Renderer::SetMaskLayers(const MaskLayer* layers,uint32_t count,float bgStructure,float bgTone){
+    m_maskLayerCount=std::min(count,kMaxMaskLayers);
+    for(uint32_t k=0;k<kMaxMaskLayers;++k)m_maskLayers[k]=(layers&&k<m_maskLayerCount)?layers[k]:MaskLayer{};
+    m_maskBgStructure=std::clamp(bgStructure,0.0f,1.0f);m_maskBgTone=std::clamp(bgTone,0.0f,1.0f);
+}
+// The 16 root constants behind MaskA..MaskD (see the shader's cbuffer).
+void D3D12Renderer::MaskParams(float*o,bool overlay)const{
+    o[0]=m_maskBgStructure;o[1]=m_maskBgTone;o[2]=float(m_maskLayerCount);o[3]=overlay?1.0f:0.0f;
+    for(uint32_t k=0;k<kMaxMaskLayers;++k){
+        const MaskLayer&l=m_maskLayers[k];
+        o[4+k*2]=std::clamp(l.structure,0.0f,1.0f);o[5+k*2]=std::clamp(l.tone,0.0f,1.0f);
+        o[12+k]=(k<m_maskLayerCount&&l.enabled)?1.0f:0.0f;
+    }
+}
 
 // Peak motion-vector magnitude of a frame in DLSS-input pixels, for the MV
 // debug view: like RAFT's flow_viz it scales colour by the frame's own maximum.
@@ -843,7 +933,9 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
     // instead of the block-matcher uncertainty. Table 2 is bound unconditionally
     // so t1..t4 are valid on both expansion paths.
     const bool useExtMask=m_extMaskValid;
-    float guideParams[8]={jitterUVX,jitterUVY,0,0,float(m_nrMaskMode),useExtMask?1.0f:0.0f,0,0};
+    float guideParams[32]={jitterUVX,jitterUVY,0,0,float(m_nrMaskMode),useExtMask?1.0f:0.0f,0,0,0,0,0,0,
+                           m_maskChannels[0],m_maskChannels[1],m_maskChannels[2],m_maskChannels[3]};
+    MaskParams(guideParams+16,false);
     cmd->SetGraphicsRootDescriptorTable(2,SRVGPU(11));
     if(m_extFlowValid&&m_extFlowEnabled){
         // Model flow replaces the block-matcher MV field; decode scale maps the
@@ -858,7 +950,7 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
         cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(6));
         if(!m_exportMode)m_mvVisMax=PeakFlowGrid(guideGridRGBA32F,m_gridW,m_gridH);
     }
-    cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);cmd->SetGraphicsRoot32BitConstants(1,8,guideParams,0);cmd->DrawInstanced(3,1,0,0);
+    cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);cmd->SetGraphicsRoot32BitConstants(1,32,guideParams,0);cmd->DrawInstanced(3,1,0,0);
     Barrier(cmd,m_motion.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,GuideReadState);Barrier(cmd,m_biasCurrent.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,GuideReadState);m_guidesInRT=false;
 
     // Populate the exact depth resource passed to NGX. The resource is R32_TYPELESS,
@@ -930,8 +1022,9 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
         // DepthGuideReadState here - all NGX-consumable - so the same per-frame
         // guides the debug views show are handed to the NR evaluate directly.
         // Motion=Zero swaps in the all-zero twin: the debug view keeps showing
-        // the estimated field, NR receives zero vectors.
-        ID3D12Resource* mvForNR=m_mvFieldScale>0.0f?m_motion.Get():m_motionZero.Get();
+        // the estimated field, NR receives zero vectors. So does a frame with
+        // no correspondence to its predecessor (SetMotionInvalid).
+        ID3D12Resource* mvForNR=(m_mvFieldScale>0.0f&&!m_motionInvalid)?m_motion.Get():m_motionZero.Get();
         NeuralEngine::Settings nr=m_nrSettings;
         nr.reset=temporalReset;
         nr.mvec=(m_nrGuideMask&1u)?mvForNR:nullptr;
@@ -993,9 +1086,11 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
     const float zs=m_exportMode?1.0f:m_zoomScale;
     const float zx=std::clamp(m_zoomCX-zs*0.5f,0.0f,1.0f-zs);
     const float zy=std::clamp(m_zoomCY-zs*0.5f,0.0f,1.0f-zs);
-    float presentParams[16]={zx,zy,compareOn?(m_fxBypassIndicator?2.0f:1.0f):(toneActive?m_toneMix:0.0f),zs,cs.brightness,cs.contrast,cs.saturation,cs.gamma,cs.temperature,cs.tint,0,0,
+    float presentParams[32]={zx,zy,compareOn?(m_fxBypassIndicator?2.0f:1.0f):(toneActive?m_toneMix:0.0f),zs,cs.brightness,cs.contrast,cs.saturation,cs.gamma,cs.temperature,cs.tint,0,0,
                              compareOn?float(m_compareMode):0.0f,m_comparePos,applyColor?m_postSharpen:0.0f,std::max(m_mvVisMax,1.0f)};
-    cmd->SetGraphicsRoot32BitConstants(1,16,presentParams,0);
+    MaskParams(presentParams+16,m_maskOverlay&&!m_exportMode&&m_extMaskValid&&m_debugView==DebugView::Final);
+    cmd->SetGraphicsRoot32BitConstants(1,32,presentParams,0);
+    cmd->SetGraphicsRootDescriptorTable(4,SRVGPU(13)); // t6 = packed mask layers (a fallback view when none are armed)
     if(m_labelAtlas)cmd->SetGraphicsRootDescriptorTable(3,SRVGPU(16)); // t5 overlay labels (PSPresent)
     // DLSS inputs stay shader-readable for NGX. Only the texture selected for the
     // debug/fallback presentation pass is temporarily made pixel-shader readable.
@@ -1004,7 +1099,7 @@ bool D3D12Renderer::RenderFrame(const uint8_t*bgra,size_t bytes,const float*guid
     switch(m_debugView){
         case DebugView::MotionVectors:debugPixelResource=m_motion.Get();cmd->SetPipelineState(m_psoMotionDebug.Get());cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(2));break;
         case DebugView::Depth:debugPixelResource=m_depth.Get();debugBefore=DepthGuideReadState;cmd->SetPipelineState(m_psoDepthDebug.Get());cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(3));break;
-        case DebugView::BiasMask:debugPixelResource=m_biasCurrent.Get();cmd->SetPipelineState(m_psoDepthDebug.Get());cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(5));break;
+        case DebugView::BiasMask:debugPixelResource=m_biasCurrent.Get();cmd->SetPipelineState(m_psoMaskDebug.Get());cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(5));break;
         case DebugView::Input:debugPixelResource=m_dlssColor.Get();cmd->SetPipelineState(m_psoPresent.Get());cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(4));break;
         default:
             if(compareOn){
@@ -1136,9 +1231,11 @@ bool D3D12Renderer::PresentCurrent(){
     const float zs=m_exportMode?1.0f:m_zoomScale;
     const float zx=std::clamp(m_zoomCX-zs*0.5f,0.0f,1.0f-zs);
     const float zy=std::clamp(m_zoomCY-zs*0.5f,0.0f,1.0f-zs);
-    float presentParams[16]={zx,zy,compareOn?(m_fxBypassIndicator?2.0f:1.0f):(toneActive?m_toneMix:0.0f),zs,cs.brightness,cs.contrast,cs.saturation,cs.gamma,cs.temperature,cs.tint,0,0,
+    float presentParams[32]={zx,zy,compareOn?(m_fxBypassIndicator?2.0f:1.0f):(toneActive?m_toneMix:0.0f),zs,cs.brightness,cs.contrast,cs.saturation,cs.gamma,cs.temperature,cs.tint,0,0,
                              compareOn?float(m_compareMode):0.0f,m_comparePos,applyColor?m_postSharpen:0.0f,std::max(m_mvVisMax,1.0f)};
-    cmd->SetGraphicsRoot32BitConstants(1,16,presentParams,0);
+    MaskParams(presentParams+16,m_maskOverlay&&!m_exportMode&&m_extMaskValid&&m_debugView==DebugView::Final);
+    cmd->SetGraphicsRoot32BitConstants(1,32,presentParams,0);
+    cmd->SetGraphicsRootDescriptorTable(4,SRVGPU(13)); // t6 = packed mask layers (a fallback view when none are armed)
     if(m_labelAtlas)cmd->SetGraphicsRootDescriptorTable(3,SRVGPU(16)); // t5 overlay labels (PSPresent)
 
     ID3D12Resource* debugPixelResource=nullptr;
@@ -1147,7 +1244,7 @@ bool D3D12Renderer::PresentCurrent(){
     switch(m_debugView){
         case DebugView::MotionVectors:debugPixelResource=m_motion.Get();cmd->SetPipelineState(m_psoMotionDebug.Get());cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(2));break;
         case DebugView::Depth:debugPixelResource=m_depth.Get();debugBefore=DepthGuideReadState;cmd->SetPipelineState(m_psoDepthDebug.Get());cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(3));break;
-        case DebugView::BiasMask:debugPixelResource=m_biasCurrent.Get();cmd->SetPipelineState(m_psoDepthDebug.Get());cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(5));break;
+        case DebugView::BiasMask:debugPixelResource=m_biasCurrent.Get();cmd->SetPipelineState(m_psoMaskDebug.Get());cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(5));break;
         case DebugView::Input:debugPixelResource=m_dlssColor.Get();cmd->SetPipelineState(m_psoPresent.Get());cmd->SetGraphicsRootDescriptorTable(0,SRVGPU(4));break;
         default:
             if(compareOn){
@@ -1207,7 +1304,8 @@ bool D3D12Renderer::RecordOutput(ID3D12GraphicsCommandList*cmd,bool used,bool te
         in.output=m_dlssOutput.Get();in.depth=m_depth.Get();
         // Always the measured field: SR needs real motion to accumulate history
         // (Motion = Zero is a neural-pass measure, honoured at the NR bind only).
-        in.motion=m_motion.Get();in.bias=m_biasCurrent.Get();
+        // A frame without a valid predecessor still gets zero vectors.
+        in.motion=m_motionInvalid?m_motionZero.Get():m_motion.Get();in.bias=m_biasCurrent.Get();
         // The convert pass sampled the source at +j: matched reports the offset
         // DLSS has to undo (-j), legacy the historical wrong sign, zero nothing.
         const float sgn=m_jitterMode==JitterMode::Matched?-1.0f:(m_jitterMode==JitterMode::Legacy?1.0f:0.0f);
